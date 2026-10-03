@@ -1,0 +1,561 @@
+From c89d6d69f1e0736b991d740fee115bdae66d82e6 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 12:20:39 +0200
+Subject: [PATCH] media: s5p-mfc: stateful decoder API with DMABUF on
+ Exynos7870
+
+Make the decoder usable by clients of the current stateful codec API,
+Android's v4l2_codec2 in particular, without changing the behaviour for
+MMAP clients:
+
+- DMABUF on both decoder queues; the CAPTURE queue is bidirectional,
+  since the decoded pictures are also the reference frames the MFC
+  reads back (a write-only mapping faults on the first P frame);
+- contiguous single-plane NV12/NV21 capture formats (v10), listed first,
+  laid out as a gralloc buffer: 32-aligned pitch programmed in the stride
+  registers, chroma right after enough luma rows;
+- CAPTURE setup before the header: G_FMT, MIN_BUFFERS_FOR_CAPTURE, S_FMT,
+  REQBUFS, QUERYBUF and STREAMON answer with placeholder buffers the MFC
+  never sees, and each queue is only checked for its own busy state;
+- V4L2_EVENT_SOURCE_CHANGE when a header is parsed, and only then;
+- the DPB is given to the MFC once every DMABUF buffer has been queued,
+  so the number of CAPTURE buffers is bounded to what a client can hold;
+- REQBUFS(0) frees the CAPTURE queue, DEC_CMD_START clears the last
+  buffer state, a DPB flush only follows a streamoff while running, and
+  an empty decode only ends the stream while draining.
+
+---
+ .../media/platform/samsung/s5p-mfc/s5p_mfc.c  |  61 +++--
+ .../platform/samsung/s5p-mfc/s5p_mfc_common.h |  11 +
+ .../platform/samsung/s5p-mfc/s5p_mfc_dec.c    | 212 ++++++++++++++++--
+ .../platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c |  22 +-
+ 4 files changed, 273 insertions(+), 33 deletions(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 18b5c5f1e7..2b48230bc0 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -352,10 +352,16 @@ static void s5p_mfc_handle_frame_new(struct s5p_mfc_ctx *ctx, unsigned int err)
+ 			else
+ 				dst_buf->b->field =
+ 							V4L2_FIELD_INTERLACED;
+-			vb2_set_plane_payload(&dst_buf->b->vb2_buf, 0,
+-						ctx->luma_size);
+-			vb2_set_plane_payload(&dst_buf->b->vb2_buf, 1,
+-						ctx->chroma_size);
++			if (ctx->dst_contig) {
++				vb2_set_plane_payload(&dst_buf->b->vb2_buf, 0,
++					ctx->stride[0] * ctx->contig_height *
++					3 / 2);
++			} else {
++				vb2_set_plane_payload(&dst_buf->b->vb2_buf, 0,
++						      ctx->luma_size);
++				vb2_set_plane_payload(&dst_buf->b->vb2_buf, 1,
++						      ctx->chroma_size);
++			}
+ 			clear_bit(dst_buf->b->vb2_buf.index,
+ 							&ctx->dec_dst_flag);
+ 
+@@ -403,18 +409,22 @@ static void s5p_mfc_handle_frame(struct s5p_mfc_ctx *ctx,
+ 	/* All frames remaining in the buffer have been extracted  */
+ 	if (dst_frame_status == S5P_FIMV_DEC_STATUS_DECODING_EMPTY) {
+ 		if (ctx->state == MFCINST_RES_CHANGE_FLUSH) {
+-			static const struct v4l2_event ev_src_ch = {
+-				.type = V4L2_EVENT_SOURCE_CHANGE,
+-				.u.src_change.changes =
+-					V4L2_EVENT_SRC_CH_RESOLUTION,
+-			};
+-
++			/*
++			 * The new header is parsed next, and the event for the
++			 * new format is sent then (s5p_mfc_handle_seq_done):
++			 * sending one here too made the client reallocate in
++			 * the wrong state.
++			 */
+ 			s5p_mfc_handle_frame_all_extracted(ctx);
+ 			ctx->state = MFCINST_RES_CHANGE_END;
+-			v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
+ 
+ 			goto leave_handle_frame;
+-		} else {
++		} else if (ctx->state == MFCINST_FINISHING) {
++			/*
++			 * Only a drain ends the stream: while running, "empty"
++			 * only means that this input produced no picture
++			 * (a buffer with just SPS/PPS, for instance).
++			 */
+ 			s5p_mfc_handle_frame_all_extracted(ctx);
+ 		}
+ 	}
+@@ -540,10 +550,21 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 		if (FW_HAS_E_MIN_SCRATCH_BUF(dev))
+ 			ctx->scratch_buf_size = s5p_mfc_hw_call(dev->mfc_ops,
+ 						get_min_scratch_buf_size, dev);
+-		if (ctx->img_width == 0 || ctx->img_height == 0)
++		if (ctx->img_width == 0 || ctx->img_height == 0) {
+ 			ctx->state = MFCINST_ERROR;
+-		else
++		} else {
++			/* Stateful API: tell the client the stream format. */
++			static const struct v4l2_event ev_src_ch = {
++				.type = V4L2_EVENT_SOURCE_CHANGE,
++				.u.src_change.changes =
++					V4L2_EVENT_SRC_CH_RESOLUTION,
++			};
++
+ 			ctx->state = MFCINST_HEAD_PARSED;
++			dev_dbg(&dev->plat_dev->dev, "header: %ux%u, DPB %d\n",
++				ctx->img_width, ctx->img_height, ctx->pb_count);
++			v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
++		}
+ 
+ 		if ((ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
+ 			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC) &&
+@@ -879,8 +900,15 @@ static int s5p_mfc_open(struct file *file)
+ 	q->drv_priv = ctx;
+ 	q->lock = &dev->mfc_mutex;
+ 	if (vdev == dev->vfd_dec) {
+-		q->io_modes = VB2_MMAP;
++		/* DMABUF: Android's Codec2 V4L2 component imports its buffers. */
++		q->io_modes = VB2_MMAP | VB2_DMABUF;
+ 		q->ops = get_dec_queue_ops();
++		/*
++		 * The decoded pictures are also the reference frames the MFC
++		 * reads back: an imported dmabuf mapped DMA_FROM_DEVICE is
++		 * write-only in the IOMMU, and the first P frame faults.
++		 */
++		q->bidirectional = 1;
+ 	} else if (vdev == dev->vfd_enc) {
+ 		q->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+ 		q->ops = get_enc_queue_ops();
+@@ -906,7 +934,8 @@ static int s5p_mfc_open(struct file *file)
+ 	q->drv_priv = ctx;
+ 	q->lock = &dev->mfc_mutex;
+ 	if (vdev == dev->vfd_dec) {
+-		q->io_modes = VB2_MMAP;
++		/* DMABUF: Android's Codec2 V4L2 component imports its buffers. */
++		q->io_modes = VB2_MMAP | VB2_DMABUF;
+ 		q->ops = get_dec_queue_ops();
+ 	} else if (vdev == dev->vfd_enc) {
+ 		q->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+index e89ee06d38..a37214448e 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+@@ -702,6 +702,17 @@ struct s5p_mfc_ctx {
+ 
+ 	int pb_count;
+ 	int total_dpb_count;
++	/*
++	 * Stateful API with DMABUF (Exynos7870): CAPTURE buffers set up
++	 * before the header is parsed (placeholders, never given to the
++	 * MFC), their size, and a single-plane NV12/NV21 layout with the
++	 * chroma right after the luma.
++	 */
++	bool dst_placeholder;
++	bool dst_contig;
++	unsigned int pre_width, pre_height;
++	/* Contiguous layout: rows of luma before the chroma (>= buf_height). */
++	unsigned int contig_height;
+ 	int mv_count;
+ 	/* Buffers */
+ 	struct s5p_mfc_priv_buf ctx;
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+index 4d3282107a..13ef289a2a 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+@@ -42,6 +42,24 @@ static const struct s5p_mfc_fmt formats[] = {
+ 		.num_planes	= 2,
+ 		.versions	= MFC_V5_BIT,
+ 	},
++	/*
++	 * Contiguous NV12/NV21 first: it is what gralloc allocates, and
++	 * clients pick the first format they support (Exynos7870).
++	 */
++	{
++		.fourcc		= V4L2_PIX_FMT_NV12,
++		.codec_mode	= S5P_MFC_CODEC_NONE,
++		.type		= MFC_FMT_RAW,
++		.num_planes	= 1,
++		.versions	= MFC_V10_BIT,
++	},
++	{
++		.fourcc		= V4L2_PIX_FMT_NV21,
++		.codec_mode	= S5P_MFC_CODEC_NONE,
++		.type		= MFC_FMT_RAW,
++		.num_planes	= 1,
++		.versions	= MFC_V10_BIT,
++	},
+ 	{
+ 		.fourcc		= V4L2_PIX_FMT_NV12M,
+ 		.codec_mode	= S5P_MFC_CODEC_NONE,
+@@ -350,6 +368,37 @@ static int vidioc_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 
+ 	mfc_debug_enter();
+ 	pix_mp = &f->fmt.pix_mp;
++	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
++	    ctx->state <= MFCINST_GOT_INST && ctx->src_queue_cnt == 0) {
++		/*
++		 * Nothing to parse yet (stateful API: the client sets up
++		 * CAPTURE before queuing the header): report the format it
++		 * asked for, the real one comes with V4L2_EVENT_SOURCE_CHANGE.
++		 */
++		unsigned int w = ctx->pre_width ? ctx->pre_width : 128;
++		unsigned int h = ctx->pre_height ? ctx->pre_height : 128;
++
++		pix_mp->width = w;
++		pix_mp->height = h;
++		pix_mp->field = V4L2_FIELD_NONE;
++		pix_mp->pixelformat = ctx->dst_fmt->fourcc;
++		pix_mp->num_planes = ctx->dst_fmt->num_planes;
++		if (ctx->dst_contig) {
++			pix_mp->pixelformat = ctx->dst_fmt->fourcc ==
++					      V4L2_PIX_FMT_NV21M ?
++					      V4L2_PIX_FMT_NV21 : V4L2_PIX_FMT_NV12;
++			pix_mp->num_planes = 1;
++		}
++		pix_mp->plane_fmt[0].bytesperline = w;
++		if (pix_mp->num_planes == 1) {
++			pix_mp->plane_fmt[0].sizeimage = w * h * 3 / 2;
++		} else {
++			pix_mp->plane_fmt[0].sizeimage = w * h;
++			pix_mp->plane_fmt[1].bytesperline = w;
++			pix_mp->plane_fmt[1].sizeimage = w * h / 2;
++		}
++		return 0;
++	}
+ 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+ 	    (ctx->state == MFCINST_GOT_INST || ctx->state ==
+ 						MFCINST_RES_CHANGE_END)) {
+@@ -377,6 +426,16 @@ static int vidioc_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 		pix_mp->plane_fmt[0].sizeimage = ctx->luma_size;
+ 		pix_mp->plane_fmt[1].bytesperline = ctx->stride[1];
+ 		pix_mp->plane_fmt[1].sizeimage = ctx->chroma_size;
++		if (ctx->dst_contig) {
++			/* Chroma right after the luma rows, as gralloc lays out NV12. */
++			pix_mp->pixelformat = ctx->dst_fmt->fourcc ==
++					      V4L2_PIX_FMT_NV21M ?
++					      V4L2_PIX_FMT_NV21 : V4L2_PIX_FMT_NV12;
++			pix_mp->num_planes = 1;
++			pix_mp->height = ctx->contig_height;
++			pix_mp->plane_fmt[0].sizeimage =
++				ctx->stride[0] * ctx->contig_height * 3 / 2;
++		}
+ 		if (ctx->dst_fmt->fourcc == V4L2_PIX_FMT_YUV420M || ctx->dst_fmt->fourcc ==
+ 				V4L2_PIX_FMT_YVU420M) {
+ 			pix_mp->plane_fmt[2].bytesperline = ctx->stride[2];
+@@ -452,7 +511,11 @@ static int vidioc_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 	pix_mp = &f->fmt.pix_mp;
+ 	if (ret)
+ 		return ret;
+-	if (vb2_is_streaming(&ctx->vq_src) || vb2_is_streaming(&ctx->vq_dst)) {
++	/* Only the queue being configured must be idle (stateful API). */
++	if ((f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
++	     vb2_is_busy(&ctx->vq_dst)) ||
++	    (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
++	     vb2_is_busy(&ctx->vq_src))) {
+ 		v4l2_err(&dev->v4l2_dev, "%s queue busy\n", __func__);
+ 		ret = -EBUSY;
+ 		goto out;
+@@ -460,6 +523,23 @@ static int vidioc_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+ 		/* dst_fmt is validated by call to vidioc_try_fmt */
+ 		ctx->dst_fmt = find_format(f, MFC_FMT_RAW);
++		ctx->dst_contig = ctx->dst_fmt->num_planes == 1;
++		if (ctx->dst_contig) {
++			/* Internally the MFC writes NV12M/NV21M planes. */
++			struct v4l2_format f2 = *f;
++
++			f2.fmt.pix_mp.pixelformat =
++				ctx->dst_fmt->fourcc == V4L2_PIX_FMT_NV21 ?
++				V4L2_PIX_FMT_NV21M : V4L2_PIX_FMT_NV12M;
++			ctx->dst_fmt = find_format(&f2, MFC_FMT_RAW);
++		}
++		if (ctx->state < MFCINST_HEAD_PARSED) {
++			ctx->pre_width = pix_mp->width;
++			ctx->pre_height = pix_mp->height;
++		} else if (ctx->state == MFCINST_HEAD_PARSED) {
++			/* The layout depends on the format: recompute it. */
++			s5p_mfc_hw_call(dev->mfc_ops, dec_calc_dpb_size, ctx);
++		}
+ 		ret = 0;
+ 		goto out;
+ 	} else if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+@@ -473,7 +553,8 @@ static int vidioc_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 			pix_mp->plane_fmt[0].sizeimage = ctx->dec_src_buf_size =
+ 								DEF_CPB_SIZE;
+ 		else if (pix_mp->plane_fmt[0].sizeimage > buf_size->cpb)
+-			ctx->dec_src_buf_size = buf_size->cpb;
++			pix_mp->plane_fmt[0].sizeimage = ctx->dec_src_buf_size =
++								buf_size->cpb;
+ 		else
+ 			ctx->dec_src_buf_size = pix_mp->plane_fmt[0].sizeimage;
+ 		pix_mp->plane_fmt[0].bytesperline = 0;
+@@ -551,8 +632,24 @@ static int reqbufs_capture(struct s5p_mfc_dev *dev, struct s5p_mfc_ctx *ctx,
+ 		ret = vb2_reqbufs(&ctx->vq_dst, reqbufs);
+ 		if (ret)
+ 			goto out;
+-		s5p_mfc_hw_call(dev->mfc_ops, release_codec_buffers, ctx);
++		if (!ctx->dst_placeholder)
++			s5p_mfc_hw_call(dev->mfc_ops, release_codec_buffers,
++					ctx);
+ 		ctx->dst_bufs_cnt = 0;
++		ctx->dst_placeholder = false;
++		ctx->capture_state = QUEUE_FREE;
++	} else if (ctx->capture_state == QUEUE_FREE &&
++		   ctx->state < MFCINST_HEAD_PARSED) {
++		/*
++		 * Stateful API: CAPTURE buffers before the header is known.
++		 * They only carry a possible early EOS; the MFC never sees
++		 * them, the client reallocates on V4L2_EVENT_SOURCE_CHANGE.
++		 */
++		ret = vb2_reqbufs(&ctx->vq_dst, reqbufs);
++		if (ret)
++			goto out;
++		ctx->dst_placeholder = true;
++		ctx->capture_state = QUEUE_BUFS_REQUESTED;
+ 	} else if (ctx->capture_state == QUEUE_FREE) {
+ 		WARN_ON(ctx->dst_bufs_cnt != 0);
+ 		mfc_debug(2, "Allocating %d buffers for CAPTURE queue\n",
+@@ -574,6 +671,14 @@ static int reqbufs_capture(struct s5p_mfc_dev *dev, struct s5p_mfc_ctx *ctx,
+ 			goto out;
+ 		}
+ 
++		/*
++		 * DMABUF buffers get their addresses when first queued
++		 * (s5p_mfc_buf_init): the DPB is set up once all of them
++		 * have been, asynchronously.
++		 */
++		if (reqbufs->memory == V4L2_MEMORY_DMABUF)
++			goto out;
++
+ 		WARN_ON(ctx->dst_bufs_cnt != ctx->total_dpb_count);
+ 		ctx->capture_state = QUEUE_BUFS_MMAPED;
+ 
+@@ -600,8 +705,9 @@ static int vidioc_reqbufs(struct file *file, void *priv,
+ 	struct s5p_mfc_dev *dev = video_drvdata(file);
+ 	struct s5p_mfc_ctx *ctx = file_to_ctx(file);
+ 
+-	if (reqbufs->memory != V4L2_MEMORY_MMAP) {
+-		mfc_debug(2, "Only V4L2_MEMORY_MMAP is supported\n");
++	if (reqbufs->memory != V4L2_MEMORY_MMAP &&
++	    reqbufs->memory != V4L2_MEMORY_DMABUF) {
++		mfc_debug(2, "Only MMAP and DMABUF are supported\n");
+ 		return -EINVAL;
+ 	}
+ 
+@@ -623,19 +729,20 @@ static int vidioc_querybuf(struct file *file, void *priv,
+ 	int ret;
+ 	int i;
+ 
+-	if (buf->memory != V4L2_MEMORY_MMAP) {
+-		mfc_err("Only mmapped buffers can be used\n");
++	if (buf->memory != V4L2_MEMORY_MMAP &&
++	    buf->memory != V4L2_MEMORY_DMABUF) {
++		mfc_err("Only MMAP and DMABUF buffers can be used\n");
+ 		return -EINVAL;
+ 	}
+ 	mfc_debug(2, "State: %d, buf->type: %d\n", ctx->state, buf->type);
+-	if (ctx->state == MFCINST_GOT_INST &&
+-			buf->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
++	if (buf->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+ 		ret = vb2_querybuf(&ctx->vq_src, buf);
+-	} else if (ctx->state == MFCINST_RUNNING &&
+-			buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
++	} else if (buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+ 		ret = vb2_querybuf(&ctx->vq_dst, buf);
+-		for (i = 0; i < buf->length; i++)
+-			buf->m.planes[i].m.mem_offset += DST_QUEUE_OFF_BASE;
++		if (buf->memory == V4L2_MEMORY_MMAP)
++			for (i = 0; i < buf->length; i++)
++				buf->m.planes[i].m.mem_offset +=
++							DST_QUEUE_OFF_BASE;
+ 	} else {
+ 		mfc_err("vidioc_querybuf called in an inappropriate state\n");
+ 		ret = -EINVAL;
+@@ -771,6 +878,11 @@ static int s5p_mfc_dec_g_v_ctrl(struct v4l2_ctrl *ctrl)
+ 		    ctx->state < MFCINST_ABORT) {
+ 			ctrl->val = ctx->pb_count;
+ 			break;
++		} else if (ctx->state <= MFCINST_GOT_INST &&
++			   ctx->src_queue_cnt == 0) {
++			/* Nothing to parse yet: one placeholder buffer. */
++			ctrl->val = 1;
++			break;
+ 		} else if (ctx->state != MFCINST_INIT &&
+ 				ctx->state != MFCINST_RES_CHANGE_END) {
+ 			v4l2_err(&dev->v4l2_dev, "Decoding not initialised\n");
+@@ -913,6 +1025,7 @@ static int vidioc_decoder_cmd(struct file *file, void *priv,
+ 		    ctx->state == MFCINST_FINISHING)
+ 			ctx->state = MFCINST_RUNNING;
+ 		spin_unlock_irqrestore(&dev->irqlock, flags);
++		vb2_clear_last_buffer_dequeued(&ctx->vq_dst);
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -980,6 +1093,26 @@ static int s5p_mfc_queue_setup(struct vb2_queue *vq,
+ 			*buf_count = MFC_MAX_BUFFERS;
+ 	/* Video capture for decoding (destination)
+ 	 * this can be set after the header was parsed */
++	} else if (ctx->state < MFCINST_HEAD_PARSED &&
++		   vq->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
++		/* Placeholder CAPTURE buffers, see reqbufs_capture(). */
++		unsigned int w = ctx->pre_width ? ctx->pre_width : 128;
++		unsigned int h = ctx->pre_height ? ctx->pre_height : 128;
++
++		*plane_count = ctx->dst_contig ? 1 : 2;
++		if (*buf_count < 1)
++			*buf_count = 1;
++		if (*buf_count > MFC_MAX_BUFFERS)
++			*buf_count = MFC_MAX_BUFFERS;
++		if (ctx->dst_contig) {
++			psize[0] = w * h * 3 / 2;
++		} else {
++			psize[0] = w * h;
++			psize[1] = w * h / 2;
++		}
++		alloc_devs[0] = ctx->dev->mem_dev[BANK_L_CTX];
++		alloc_devs[1] = ctx->dev->mem_dev[BANK_L_CTX];
++		return 0;
+ 	} else if (ctx->state == MFCINST_HEAD_PARSED &&
+ 		   vq->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+ 		/* Output plane count is 2 - one for Y and one for CbCr */
+@@ -988,13 +1121,25 @@ static int s5p_mfc_queue_setup(struct vb2_queue *vq,
+ 			mfc_err("invalid format\n");
+ 			return -EINVAL;
+ 		}
+-		*plane_count = format->comp_planes;
++		*plane_count = ctx->dst_contig ? 1 : format->comp_planes;
+ 
+ 		/* Setup buffer count */
+ 		if (*buf_count < ctx->pb_count)
+ 			*buf_count = ctx->pb_count;
+-		if (*buf_count > ctx->pb_count + MFC_MAX_EXTRA_DPB)
++		if (vq->memory == V4L2_MEMORY_DMABUF) {
++			/*
++			 * The DPB is given to the MFC once every buffer has
++			 * been queued (their addresses come with the dmabufs),
++			 * so the client must be able to hold all of them at
++			 * once: Android's BufferQueue grants about 23. Keep a
++			 * margin above the DPB for the frames being displayed.
++			 */
++			*buf_count = min_t(unsigned int, ctx->pb_count + 8, 20);
++			if (*buf_count < ctx->pb_count)
++				*buf_count = ctx->pb_count;
++		} else if (*buf_count > ctx->pb_count + MFC_MAX_EXTRA_DPB) {
+ 			*buf_count = ctx->pb_count + MFC_MAX_EXTRA_DPB;
++		}
+ 		if (*buf_count > MFC_MAX_BUFFERS)
+ 			*buf_count = MFC_MAX_BUFFERS;
+ 	} else {
+@@ -1008,6 +1153,8 @@ static int s5p_mfc_queue_setup(struct vb2_queue *vq,
+ 	    vq->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+ 		psize[0] = ctx->luma_size;
+ 		psize[1] = ctx->chroma_size;
++		if (ctx->dst_contig)
++			psize[0] = ctx->stride[0] * ctx->contig_height * 3 / 2;
+ 		if (ctx->dst_fmt->fourcc == V4L2_PIX_FMT_YUV420M || ctx->dst_fmt->fourcc ==
+ 				V4L2_PIX_FMT_YVU420M)
+ 			psize[2] = ctx->chroma_size_1;
+@@ -1037,8 +1184,30 @@ static int s5p_mfc_buf_init(struct vb2_buffer *vb)
+ 	unsigned int i;
+ 
+ 	if (vq->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
++		if (ctx->dst_placeholder) {
++			/* Never given to the MFC, see reqbufs_capture(). */
++			ctx->dst_bufs[vb->index].b = vbuf;
++			return 0;
++		}
+ 		if (ctx->capture_state == QUEUE_BUFS_MMAPED)
+ 			return 0;
++		if (ctx->dst_contig) {
++			dma_addr_t luma = vb2_dma_contig_plane_dma_addr(vb, 0);
++			unsigned long need = ctx->stride[0] * ctx->contig_height *
++					     3 / 2;
++
++			if (!luma || vb2_plane_size(vb, 0) < need) {
++				mfc_err("CAPTURE buffer too small: %lu < %lu\n",
++					vb2_plane_size(vb, 0), need);
++				return -EINVAL;
++			}
++			i = vb->index;
++			ctx->dst_bufs[i].b = vbuf;
++			ctx->dst_bufs[i].cookie.raw.luma = luma;
++			ctx->dst_bufs[i].cookie.raw.chroma =
++				luma + ctx->stride[0] * ctx->contig_height;
++			goto registered;
++		}
+ 		for (i = 0; i < ctx->dst_fmt->num_planes; i++) {
+ 			if (IS_ERR_OR_NULL(ERR_PTR(
+ 					vb2_dma_contig_plane_dma_addr(vb, i)))) {
+@@ -1069,7 +1238,16 @@ static int s5p_mfc_buf_init(struct vb2_buffer *vb)
+ 			ctx->dst_bufs[i].cookie.raw.chroma_1 =
+ 					vb2_dma_contig_plane_dma_addr(vb, 2);
+ 		}
++registered:
+ 		ctx->dst_bufs_cnt++;
++		/*
++		 * DMABUF: the last buffer of the set has its address, the
++		 * DPB can be given to the MFC (see reqbufs_capture()).
++		 */
++		if (vq->memory == V4L2_MEMORY_DMABUF &&
++		    ctx->capture_state == QUEUE_BUFS_REQUESTED &&
++		    ctx->dst_bufs_cnt == ctx->total_dpb_count)
++			ctx->capture_state = QUEUE_BUFS_MMAPED;
+ 	} else if (vq->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+ 		if (IS_ERR_OR_NULL(ERR_PTR(
+ 					vb2_dma_contig_plane_dma_addr(vb, 0)))) {
+@@ -1131,7 +1309,9 @@ static void s5p_mfc_stop_streaming(struct vb2_queue *q)
+ 		s5p_mfc_cleanup_queue(&ctx->dst_queue, &ctx->vq_dst);
+ 		INIT_LIST_HEAD(&ctx->dst_queue);
+ 		ctx->dst_queue_cnt = 0;
+-		ctx->dpb_flush_flag = 1;
++		/* A DPB flush only follows a streamoff while decoding. */
++		if (ctx->state == MFCINST_RUNNING)
++			ctx->dpb_flush_flag = 1;
+ 		ctx->dec_dst_flag = 0;
+ 		if (IS_MFCV6_PLUS(dev) && (ctx->state == MFCINST_RUNNING)) {
+ 			ctx->state = MFCINST_FLUSH;
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+index c129174d58..bbff3bf991 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+@@ -497,7 +497,10 @@ static void s5p_mfc_dec_calc_dpb_size_v6(struct s5p_mfc_ctx *ctx)
+ 	case V4L2_PIX_FMT_NV12M:
+ 	case V4L2_PIX_FMT_NV21M:
+ 		ctx->stride[0] = ALIGN(ctx->img_width, S5P_FIMV_NV12MT_HALIGN_V6);
+-		ctx->stride[1] = ALIGN(ctx->img_width, S5P_FIMV_NV12MT_HALIGN_V6);
++		/* Contiguous NV12 in a gralloc buffer: its pitch is 32-aligned. */
++		if (ctx->dst_contig)
++			ctx->stride[0] = ALIGN(ctx->img_width, 32);
++		ctx->stride[1] = ctx->stride[0];
+ 		ctx->luma_size = calc_plane(ctx->stride[0], ctx->img_height);
+ 		ctx->chroma_size = calc_plane(ctx->stride[1], (ctx->img_height / 2));
+ 		break;
+@@ -519,6 +522,23 @@ static void s5p_mfc_dec_calc_dpb_size_v6(struct s5p_mfc_ctx *ctx)
+ 		ctx->chroma_size_1 += S5P_FIMV_D_ALIGN_PLANE_SIZE_V8;
+ 	}
+ 
++	/*
++	 * Contiguous layout: enough luma rows for the plane size the MFC
++	 * uses, and half as many again for the chroma, which starts right
++	 * after them (stride * contig_height), as in a gralloc NV12 buffer
++	 * of that height.
++	 */
++	ctx->contig_height = ctx->buf_height;
++	if (ctx->dst_contig) {
++		unsigned int rows = max_t(unsigned int,
++					 DIV_ROUND_UP(ctx->luma_size, ctx->stride[0]),
++					DIV_ROUND_UP(2 * ctx->chroma_size,
++						     ctx->stride[0]));
++
++		ctx->contig_height = ALIGN(max_t(unsigned int, rows,
++						 ctx->buf_height), 16);
++	}
++
+ 	if (ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
+ 			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC) {
+ 		if (IS_MFCV12(dev))
+-- 
+2.47.3
+

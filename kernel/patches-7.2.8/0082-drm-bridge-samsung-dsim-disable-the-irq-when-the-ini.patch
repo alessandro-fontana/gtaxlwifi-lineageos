@@ -1,0 +1,27 @@
+From 982b65c27a5a453b2800915671e8a9247632b62e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 9 Sep 2026 16:14:04 +0000
+Subject: [PATCH] drm: bridge: samsung-dsim: disable the irq when the init is
+ aborted
+
+The abort path added for the unlocked PLL left the irq enabled, and the
+retried init tripped 'Unbalanced enable for IRQ 38'.
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index e66ecfe4c9..05c1623522 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -1679,6 +1679,7 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 	ret = samsung_dsim_enable_clock(dsi);
+ 	if (ret) {
+ 		dev_err(dsi->dev, "link init aborted, PLL not locked (%d)\n", ret);
++		samsung_dsim_disable_irq(dsi);
+ 		return ret;
+ 	}
+ 
+-- 
+2.47.3
+

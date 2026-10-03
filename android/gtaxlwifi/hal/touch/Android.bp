@@ -1,0 +1,24 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+cc_binary {
+    name: "vendor.lineage.touch-service.gtaxlwifi",
+    relative_install_path: "hw",
+    init_rc: ["vendor.lineage.touch-service.gtaxlwifi.rc"],
+    vintf_fragments: ["vendor.lineage.touch-service.gtaxlwifi.xml"],
+    vendor: true,
+
+    srcs: [
+        "SysfsFlag.cpp",
+        "Touch.cpp",
+        "main.cpp",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "vendor.lineage.touch-V1-ndk",
+    ],
+}

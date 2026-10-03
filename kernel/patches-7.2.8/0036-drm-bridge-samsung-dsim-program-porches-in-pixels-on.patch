@@ -1,0 +1,99 @@
+From 2659a23da5377dc7de0fef7fe24f2853d675d024 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 19:35:30 +0000
+Subject: [PATCH] drm/bridge: samsung-dsim: program porches in pixels on
+ exynos7870
+
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 44 ++++++++++++++++++++-------
+ include/drm/bridge/samsung-dsim.h     |  1 +
+ 2 files changed, 34 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index 3fe1c3b4b8..b1fc9f8b17 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -189,6 +189,9 @@
+ #define DSIM_PLL_DPDNSWAP_CLK		(1 << 25)
+ #define DSIM_PLL_DPDNSWAP_DAT		(1 << 24)
+ #define DSIM_FREQ_BAND(x)		((x) << 24)
++
++/* Fixed stable VFP used by the variants that program porches in pixels */
++#define DSIM_STABLE_VFP_PIXEL		1
+ #define DSIM_PLL_EN			BIT(23)
+ #define DSIM_PLL(x, offset)		((x) << (offset))
+ 
+@@ -619,6 +622,7 @@ static const struct samsung_dsim_driver_data exynos7870_dsi_driver_data = {
+ 	.plltmr_reg = 0xa0,
+ 	.has_clklane_stop = 1,
+ 	.has_sfrctrl = 1,
++	.has_pixel_porch = 1,
+ 	.clk_data = exynos7870_clk_bulk_data,
+ 	.num_clks = ARRAY_SIZE(exynos7870_clk_bulk_data),
+ 	.max_freq = 1500,
+@@ -1176,21 +1180,39 @@ static void samsung_dsim_set_display_mode(struct samsung_dsim *dsi)
+ 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
+ 		u64 byte_clk = dsi->hs_clock / 8;
+ 		u64 pix_clk = m->clock * 1000;
+-
+-		int hfp = DIV64_U64_ROUND_UP((m->hsync_start - m->hdisplay) * byte_clk, pix_clk);
+-		int hbp = DIV64_U64_ROUND_UP((m->htotal - m->hsync_end) * byte_clk, pix_clk);
+-		int hsa = DIV64_U64_ROUND_UP((m->hsync_end - m->hsync_start) * byte_clk, pix_clk);
+-
+-		/* remove packet overhead when possible */
+-		hfp = max(hfp - 6, 0);
+-		hbp = max(hbp - 6, 0);
+-		hsa = max(hsa - 6, 0);
++		int vfp = m->vsync_start - m->vdisplay;
++		int stable_vfp = vfp;
++		int cmd_allow = 0xf;
++		int hfp, hbp, hsa;
++
++		if (dsi->driver_data->has_pixel_porch) {
++			/*
++			 * This variant takes the horizontal porches as plain
++			 * pixel counts rather than byte clocks, and wants a
++			 * fixed stable VFP with the command allow window
++			 * filling what is left of the front porch.
++			 */
++			hfp = m->hsync_start - m->hdisplay;
++			hbp = m->htotal - m->hsync_end;
++			hsa = m->hsync_end - m->hsync_start;
++			stable_vfp = DSIM_STABLE_VFP_PIXEL;
++			cmd_allow = max(vfp - stable_vfp - 2, 0);
++		} else {
++			hfp = DIV64_U64_ROUND_UP((m->hsync_start - m->hdisplay) * byte_clk, pix_clk);
++			hbp = DIV64_U64_ROUND_UP((m->htotal - m->hsync_end) * byte_clk, pix_clk);
++			hsa = DIV64_U64_ROUND_UP((m->hsync_end - m->hsync_start) * byte_clk, pix_clk);
++
++			/* remove packet overhead when possible */
++			hfp = max(hfp - 6, 0);
++			hbp = max(hbp - 6, 0);
++			hsa = max(hsa - 6, 0);
++		}
+ 
+ 		dev_dbg(dsi->dev, "calculated hfp: %u, hbp: %u, hsa: %u",
+ 			hfp, hbp, hsa);
+ 
+-		reg = DSIM_CMD_ALLOW(0xf)
+-			| DSIM_STABLE_VFP(m->vsync_start - m->vdisplay)
++		reg = DSIM_CMD_ALLOW(cmd_allow)
++			| DSIM_STABLE_VFP(stable_vfp)
+ 			| DSIM_MAIN_VBP(m->vtotal - m->vsync_end);
+ 		samsung_dsim_write(dsi, DSIM_MVPORCH_REG, reg);
+ 
+diff --git a/include/drm/bridge/samsung-dsim.h b/include/drm/bridge/samsung-dsim.h
+index 03005e4747..109cdb5d83 100644
+--- a/include/drm/bridge/samsung-dsim.h
++++ b/include/drm/bridge/samsung-dsim.h
+@@ -59,6 +59,7 @@ struct samsung_dsim_driver_data {
+ 	unsigned int has_clklane_stop:1;
+ 	unsigned int has_broken_fifoctrl_emptyhdr:1;
+ 	unsigned int has_sfrctrl:1;
++	unsigned int has_pixel_porch:1;
+ 	struct clk_bulk_data *clk_data;
+ 	unsigned int num_clks;
+ 	unsigned int min_freq;
+-- 
+2.47.3
+

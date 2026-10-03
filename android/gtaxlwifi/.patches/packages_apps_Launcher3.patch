@@ -1,0 +1,15 @@
+diff --git a/quickstep/src/com/android/quickstep/views/TaskView.kt b/quickstep/src/com/android/quickstep/views/TaskView.kt
+index effda1c..ff2fac0 100644
+--- a/quickstep/src/com/android/quickstep/views/TaskView.kt
++++ b/quickstep/src/com/android/quickstep/views/TaskView.kt
+@@ -563,8 +563,8 @@ constructor(
+                 dispatcherProvider = RecentsDependencies.get(context),
+             )
+         } else null
+-    private val dispatcherProvider: DispatcherProvider = RecentsDependencies.get(context)
+-    private val coroutineScope: CoroutineScope = RecentsDependencies.get(context)
++    private val dispatcherProvider: DispatcherProvider by lazy { RecentsDependencies.get(context) }
++    private val coroutineScope: CoroutineScope by lazy { RecentsDependencies.get(context) }
+     private val coroutineJobs = mutableListOf<Job>()
+     private var taskDismissButton: FrameLayout? = null
+     private var taskDismissButtonAnimator: ObjectAnimator? = null

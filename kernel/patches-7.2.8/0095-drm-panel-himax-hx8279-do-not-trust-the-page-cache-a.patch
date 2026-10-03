@@ -1,0 +1,58 @@
+From cb94ac650ef1262c1514428efabf5198c9159032 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 13:11:47 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: do not trust the page cache after a
+ handoff
+
+hx8279_set_page() keeps the last selected page and skips the B0 write
+when the wanted page is already selected. On the bootloader handoff path
+the panel is left exactly as the bootloader had it, including its page
+pointer, while the cache still holds the zero it was initialised with.
+The first set_page(0) after that therefore writes nothing and whatever
+command follows is executed on the bootloader's page.
+
+Until now nothing was sent on that path, so it never showed. The
+previous patch sends the display on register there, and on the first
+boot after it the panel came up at a very low brightness with the slider
+at maximum: page 0 register B3 written while the DriverIC was still on
+page 4, which is the backlight page. The first screen off switches to
+the cold path, where the cache is correct again, and the brightness
+returns to normal - which is exactly how it behaved.
+
+Mark the page as unknown when taking over from the bootloader, so the
+next set_page() always emits the B0 write.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index bd2d56ee5b..3bb3bdd53a 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -27,6 +27,7 @@
+ 
+ /* Page selection */
+ #define HX8279_REG_PAGE			0xb0
++ #define HX8279_PAGE_UNKNOWN			0xff
+  #define HX8279_PAGE_SEL		GENMASK(3, 0)
+ 
+ /* Identification */
+@@ -1158,6 +1159,15 @@ static int hx8279_prepare(struct drm_panel *panel)
+ 		if (ret)
+ 			return ret;
+ 
++		/*
++		 * The DriverIC is on whatever page the bootloader left it,
++		 * so the cache cannot be trusted: without this the first
++		 * hx8279_set_page() call sees the page it wants already
++		 * selected, writes nothing, and the command that follows
++		 * lands on the wrong page.
++		 */
++		hx->last_page = HX8279_PAGE_UNKNOWN;
++
+ 		hx->handoff = false;
+ 
+ 		/*
+-- 
+2.47.3
+

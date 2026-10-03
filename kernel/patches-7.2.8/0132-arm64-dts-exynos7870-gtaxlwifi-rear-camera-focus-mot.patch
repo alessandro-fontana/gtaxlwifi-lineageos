@@ -1,0 +1,87 @@
+From 94e447d46dbc469e19b94c9d0349d5508ebef361 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 17:13:22 +0200
+Subject: [PATCH] arm64: dts: exynos7870-gtaxlwifi: rear camera focus motor
+
+DW9807 on hsi2c2 at 0x0c, powered from LDO29 (VDD_CAM_AF_2P8), linked
+to the S5K4H5YC with lens-focus; enable its driver.
+
+---
+ .../boot/dts/exynos/exynos7870-gtaxlwifi.dts  | 33 +++++++++++++++++++
+ arch/arm64/configs/gtaxlwifi_defconfig        |  1 +
+ 2 files changed, 34 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+index a86d4d5a48..54c0d73ef7 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+@@ -1300,6 +1300,17 @@ vdd_ldo32: ldo32 {
+ 			 * acceso a 1,8 V (0x4c = 0xe8): qui 1,2 V e lo accende
+ 			 * il driver del sensore (§57.4).
+ 			 */
++			/*
++			 * LDO29: motore dell'autofocus posteriore, DW9807
++			 * ("VDD_CAM_AF_2P8" nel downstream). Lo accende il
++			 * driver del DW9807 (§57).
++			 */
++			vdd_ldo29: ldo29 {
++				regulator-name = "VDD_CAM_AF_2P8";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++			};
++
+ 			vdd_ldo30: ldo30 {
+ 				regulator-name = "VDD_CAM_CORE_1P2";
+ 				regulator-min-microvolt = <1200000>;
+@@ -2586,6 +2597,22 @@ csis1_in: endpoint {
+ 	};
+ };
+ 
++/*
++ * Autofocus posteriore: DW9807 su hsi2c_4 del downstream, che qui e'
++ * hsi2c2 (pin gpf1-0/1), indirizzo 0x0c. Sullo stesso bus c'e' la EEPROM
++ * di taratura del modulo a 0x58, non dichiarata.
++ */
++&hsi2c2 {
++	clock-frequency = <400000>;
++	status = "okay";
++
++	rear_vcm: lens@c {
++		compatible = "dongwoon,dw9807-vcm";
++		reg = <0x0c>;
++		vdd-supply = <&vdd_ldo29>;
++	};
++};
++
+ /*
+  * ======================================================================
+  * FOTOCAMERA POSTERIORE — Samsung S5K4H5YC su CSIS0 (§57)
+@@ -2620,7 +2647,13 @@ camera@37 {
+ 		reset-gpios = <&gpf3 3 GPIO_ACTIVE_LOW>;
+ 
+ 		orientation = <1>;
++		/*
++		 * Misurata (§57): come per l'anteriore, col tablet in piedi
++		 * nell'orientamento naturale l'alto della scena sta a destra
++		 * nel fotogramma grezzo; Android lo ruota di 270 gradi.
++		 */
+ 		rotation = <90>;
++		lens-focus = <&rear_vcm>;
+ 
+ 		port {
+ 			s5k4h5yc_out: endpoint {
+diff --git a/arch/arm64/configs/gtaxlwifi_defconfig b/arch/arm64/configs/gtaxlwifi_defconfig
+index 18a5fc5535..093944b8af 100644
+--- a/arch/arm64/configs/gtaxlwifi_defconfig
++++ b/arch/arm64/configs/gtaxlwifi_defconfig
+@@ -3229,6 +3229,7 @@ CONFIG_VIDEO_EXYNOS7870_CSIS=m
+ CONFIG_VIDEO_CAMERA_SENSOR=y
+ CONFIG_VIDEO_S5K4H5YC=m
+ CONFIG_VIDEO_SR259=m
++CONFIG_VIDEO_DW9807_VCM=m
+ 
+ #
+ # Graphics support
+-- 
+2.47.3
+

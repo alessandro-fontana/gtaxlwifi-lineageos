@@ -1,0 +1,45 @@
+From b8e1976b19d899bf1fd26d485c51afd25b568dab Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:22:35 +0200
+Subject: [PATCH 20/21] ipa: simple: awb: subtract the whole black level from
+ each sum
+
+Every statistics sample adds one red, one averaged green and one blue
+value, and one histogram entry, so each colour sum holds as many
+values as the histogram and carries the whole black level offset.
+Subtracting a quarter of it from red and blue and half from green
+left a residue of black, larger in red and blue: their gains came out
+low and the pictures had a green cast.
+
+---
+ src/ipa/simple/algorithms/awb.cpp | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/awb.cpp b/src/ipa/simple/algorithms/awb.cpp
+index cf567e89..457eaf30 100644
+--- a/src/ipa/simple/algorithms/awb.cpp
++++ b/src/ipa/simple/algorithms/awb.cpp
+@@ -68,10 +68,17 @@ void Awb::process(IPAContext &context,
+ 	 */
+ 	const uint64_t nPixels = std::accumulate(
+ 		histogram.begin(), histogram.end(), 0);
++	/*
++	 * Every statistics sample adds one red, one (averaged) green and one
++	 * blue value, and one histogram entry: each sum holds nPixels values
++	 * and carries the whole offset. Subtracting a quarter from red and
++	 * blue and half from green left a residue of black, larger in red and
++	 * blue, and a green cast.
++	 */
+ 	const uint64_t offset = blackLevel * nPixels;
+-	const uint64_t sumR = stats->sumR_ - offset / 4;
+-	const uint64_t sumG = stats->sumG_ - offset / 2;
+-	const uint64_t sumB = stats->sumB_ - offset / 4;
++	const uint64_t sumR = stats->sumR_ > offset ? stats->sumR_ - offset : 0;
++	const uint64_t sumG = stats->sumG_ > offset ? stats->sumG_ - offset : 0;
++	const uint64_t sumB = stats->sumB_ > offset ? stats->sumB_ - offset : 0;
+ 
+ 	/*
+ 	 * Calculate red and blue gains for AWB.
+-- 
+2.47.3
+

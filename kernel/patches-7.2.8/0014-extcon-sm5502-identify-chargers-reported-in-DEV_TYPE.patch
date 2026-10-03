@@ -1,0 +1,88 @@
+From a4a61e0271ce83734f7cd8a3582f48b80453f5b4 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 14 Aug 2026 19:00:00 +0000
+Subject: [PATCH] extcon: sm5502: identify chargers reported in DEV_TYPE3
+
+The SM5502 classifies some wall chargers that do not follow BC 1.2 in
+DEV_TYPE3 rather than DEV_TYPE1.  The driver never reads that register,
+so for such a charger DEV_TYPE1 stays at 0x00,
+sm5502_muic_get_cable_type() falls through to -EINVAL and no cable state
+is published at all.
+
+On a Galaxy Tab A (SM-T580) this leaves the extcon device reporting
+nothing while VBUS is present and the charger is drawing current: a
+charger driver consuming the extcon notifier keeps its most conservative
+input current limit, so the battery discharges on a connected wall
+charger.  Measured with the charger attached: ADC 0x1f (open), DEV_TYPE1
+0x00, DEV_TYPE3 0x40, power_supply online 1.
+
+The vendor driver handles this: it reads DEV_TYPE3 and treats the U200
+charger bit as an ordinary wall charger.  Do the same, but only once
+DEV_TYPE1 has failed to identify anything, so nothing changes for cables
+that are already recognised.  The other DEV_TYPE3 bits are left alone;
+only U200 has been observed on hardware.
+
+DEV_TYPE3 is already listed in the register enum and is below
+max_register, so no regmap change is needed.
+---
+ drivers/extcon/extcon-sm5502.c | 26 +++++++++++++++++++++++---
+ drivers/extcon/extcon-sm5502.h |  3 +++
+ 2 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index 9ceedb64d0..f3add0b644 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -450,12 +450,32 @@ static unsigned int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
+ 		case SM5502_REG_DEV_TYPE1_DEDICATED_CHG_MASK:
+ 			cable_type = SM5502_MUIC_ADC_OPEN_TA;
+ 			break;
+-		default:
++		default: {
++			unsigned int dev_type3;
++
++			/*
++			 * Chargers that do not follow BC 1.2 are reported in
++			 * DEV_TYPE3 instead, leaving DEV_TYPE1 empty.
++			 */
++			ret = regmap_read(info->regmap, SM5502_REG_DEV_TYPE3,
++					  &dev_type3);
++			if (ret) {
++				dev_err(info->dev,
++					"failed to read DEV_TYPE3 reg\n");
++				return ret;
++			}
++
++			if (dev_type3 & SM5502_REG_DEV_TYPE3_U200_CHG_MASK) {
++				cable_type = SM5502_MUIC_ADC_OPEN_TA;
++				break;
++			}
++
+ 			dev_dbg(info->dev,
+-				"cannot identify the cable type: adc(0x%x)\n",
+-				adc);
++				"cannot identify the cable type: adc(0x%x), dev_type1(0x%x), dev_type3(0x%x)\n",
++				adc, dev_type1, dev_type3);
+ 			return -EINVAL;
+ 		}
++		}
+ 		break;
+ 	default:
+ 		dev_err(info->dev,
+diff --git a/drivers/extcon/extcon-sm5502.h b/drivers/extcon/extcon-sm5502.h
+index 9c04315d48..5300e4980e 100644
+--- a/drivers/extcon/extcon-sm5502.h
++++ b/drivers/extcon/extcon-sm5502.h
+@@ -235,6 +235,9 @@ enum sm5502_reg {
+ #define SM5504_REG_DEV_TYPE1_USB_OTG_SHIFT		0
+ #define SM5504_REG_DEV_TYPE1_USB_OTG_MASK		(0x1 << SM5504_REG_DEV_TYPE1_USB_OTG_SHIFT)
+ 
++#define SM5502_REG_DEV_TYPE3_U200_CHG_SHIFT		6
++#define SM5502_REG_DEV_TYPE3_U200_CHG_MASK		(0x1 << SM5502_REG_DEV_TYPE3_U200_CHG_SHIFT)
++
+ #define SM5502_REG_DEV_TYPE2_JIG_USB_ON_SHIFT		0
+ #define SM5502_REG_DEV_TYPE2_JIG_USB_OFF_SHIFT		1
+ #define SM5502_REG_DEV_TYPE2_JIG_UART_ON_SHIFT		2
+-- 
+2.47.3
+

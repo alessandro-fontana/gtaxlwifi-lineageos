@@ -1,0 +1,19 @@
+# Charging mode: minui opens the DRM cards in /dev/dri (§42.9).
+#
+# device/mainline/common/sepolicy/vendor/charger_type.te grants the NODES
+# (gpu_device:chr_file) but not the DIRECTORY containing them: without search
+# minui does not even get to open them, gr_init fails, HealthdDraw::Create
+# returns nullptr and charging mode runs without drawing anything. Measured:
+# 64 { search } denials on gpu_device:dir per session, and "charger: gr_init
+# failed" right after.
+allow charger_type gpu_device:dir r_dir_perms;
+
+# NOTE: a second denial remains, 791 default_prop reads per session,
+# because healthd_mode_charger.cpp:624 reads ro.charger_mode_autoboot and AOSP
+# does not label it in any property_contexts. It cannot be closed in any way
+# from the vendor side: labelling it is forbidden by VTS (vendor
+# property_contexts accept only vendor prefixes) and granting it is
+# forbidden by a neverallow (system/sepolicy/public/property.te:272, tried:
+# the build stops). It must be fixed in the system policy, or upstream (§12).
+# It is harmless: the failed read returns the default false, which is the
+# intended behaviour.

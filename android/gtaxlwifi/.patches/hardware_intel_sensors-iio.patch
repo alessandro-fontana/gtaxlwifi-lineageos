@@ -1,0 +1,28 @@
+diff --git a/enumeration.c b/enumeration.c
+index 3b24a6a..25bd8cb 100644
+--- a/enumeration.c
++++ b/enumeration.c
+@@ -91,6 +91,23 @@ sensor_catalog_entry_t sensor_catalog[] = {
+ 			{ DECLARE_NAMED_CHANNEL("intensity", "both") },
+ 		},
+ 	},
++	{
++		/*
++		 * RGBC ambient light sensors (cm3323, tcs3472, apds9960...) expose
++		 * per-color intensities and a clear channel instead of the single
++		 * "both" channel of the simpler parts, and no illuminance channel
++		 * at all. The clear channel is the one that tracks overall
++		 * brightness, so it is what Android's light sensor should follow.
++		 */
++		.tag		= "intensity",
++		.shorthand	= "",
++		.type		= SENSOR_TYPE_INTERNAL_INTENSITY,
++		.num_channels	= 1,
++		.is_virtual	= 0,
++		.channel = {
++			{ DECLARE_NAMED_CHANNEL("intensity", "clear") },
++		},
++	},
+ 	{
+ 		.tag		= "illuminance",
+ 		.shorthand	= "",

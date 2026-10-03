@@ -1,0 +1,174 @@
+From 9483364e29eab63ddf86a38c2f66ccd97ffcde2b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Mon, 21 Sep 2026 16:20:37 +0200
+Subject: [PATCH] Input: stmfts - allow swapping the two touch key codes
+
+The controller reports the two touch keys as a two bit map and says
+nothing about which one is which: it only has a "key 0" and a "key 1".
+The driver names those bits after the ST reference design, KEY_MENU and
+KEY_BACK, but which key sits left of the home button is a property of
+the panel.  On the Samsung Galaxy Tab A 10.1 (2016) the glass is
+silkscreened with recents on the left and back on the right, which is
+the other way round from what the bit numbering suggests, and other
+boards in the family differ again.
+
+Userspace is the only place that knows what is printed on the glass, so
+rather than encoding one board's wiring in the driver add a "key_swap"
+sysfs attribute that flips which keycode each bit reports.
+
+Changing the mapping while a key is held would send the release on the
+new keycode and leave the old one down forever, so synthesise the
+releases of both keycodes before switching.
+
+The key state and configuration get a mutex of their own rather than
+reusing the existing one, which serialises the transfer buffers and is
+taken inside every transfer helper: a driver command issued while
+holding that one would deadlock against itself.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ drivers/input/touchscreen/stmfts.c | 86 ++++++++++++++++++++++++++++--
+ 1 file changed, 83 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/input/touchscreen/stmfts.c b/drivers/input/touchscreen/stmfts.c
+index a749b17ee8..5ed45b92b5 100644
+--- a/drivers/input/touchscreen/stmfts.c
++++ b/drivers/input/touchscreen/stmfts.c
+@@ -145,6 +145,14 @@ struct stmfts_data {
+ 	/* serialises access to the transfer buffers below */
+ 	struct mutex mutex;
+ 
++	/*
++	 * Serialises the touch key configuration and the key state against the
++	 * event handler.  Deliberately not @mutex: that one is taken inside
++	 * every transfer helper, so a command issued while holding it would
++	 * deadlock against itself.
++	 */
++	struct mutex key_mutex;
++
+ 	struct touchscreen_properties prop;
+ 
+ 	struct regulator *avdd;
+@@ -153,6 +161,14 @@ struct stmfts_data {
+ 
+ 	bool use_key;
+ 	u8 key_state;
++	/*
++	 * Swap the keycodes the two touch keys report.  The controller only
++	 * says "key 0" and "key 1"; which one is physically left of the home
++	 * button is a property of the panel, not of the chip, and on some
++	 * boards it is the other way round from the ST reference.  Exposed as
++	 * the 'key_swap' sysfs attribute.
++	 */
++	bool key_swap;
+ 
+ 	u16 chip_id;
+ 	u16 fw_ver;
+@@ -703,17 +719,25 @@ static void stmfts_report_contact_release(struct stmfts_data *sdata,
+ static void stmfts_report_key_event(struct stmfts_data *sdata, const u8 event[])
+ {
+ 	u8 keys = event[2];
+-	u8 changed = keys ^ sdata->key_state;
++	u8 changed;
++
++	mutex_lock(&sdata->key_mutex);
++
++	changed = keys ^ sdata->key_state;
+ 
+ 	if (changed & STMFTS_MASK_KEY_MENU)
+-		input_report_key(sdata->input, KEY_MENU,
++		input_report_key(sdata->input,
++				 sdata->key_swap ? KEY_BACK : KEY_MENU,
+ 				 !!(keys & STMFTS_MASK_KEY_MENU));
+ 
+ 	if (changed & STMFTS_MASK_KEY_BACK)
+-		input_report_key(sdata->input, KEY_BACK,
++		input_report_key(sdata->input,
++				 sdata->key_swap ? KEY_MENU : KEY_BACK,
+ 				 !!(keys & STMFTS_MASK_KEY_BACK));
+ 
+ 	sdata->key_state = keys;
++
++	mutex_unlock(&sdata->key_mutex);
+ }
+ 
+ static void stmfts_parse_event(struct stmfts_data *sdata, const u8 *event)
+@@ -892,12 +916,67 @@ static ssize_t debug_state_show(struct device *dev,
+ 			  fifo[0], fifo[1], fifo[1] / 2, intr[0], intr[1]);
+ }
+ 
++/*
++ * Which of the two touch keys is which is a board property, and userspace is
++ * the only place that knows what is silkscreened on the glass.  Rather than
++ * hardcoding one board's wiring in the driver, let it be flipped at runtime.
++ *
++ * Releases are synthesised on the way out so a key cannot get stuck down
++ * under the old keycode when the mapping changes while it is held.
++ */
++static ssize_t key_swap_show(struct device *dev,
++			     struct device_attribute *attr, char *buf)
++{
++	struct stmfts_data *sdata = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%u\n", sdata->key_swap ? 1 : 0);
++}
++
++static ssize_t key_swap_store(struct device *dev,
++			      struct device_attribute *attr,
++			      const char *buf, size_t count)
++{
++	struct stmfts_data *sdata = dev_get_drvdata(dev);
++	bool swap;
++	int err;
++
++	if (!sdata->use_key)
++		return -EOPNOTSUPP;
++
++	err = kstrtobool(buf, &swap);
++	if (err)
++		return err;
++
++	mutex_lock(&sdata->key_mutex);
++
++	if (sdata->key_swap != swap) {
++		if (sdata->key_state) {
++			input_report_key(sdata->input,
++					 sdata->key_swap ? KEY_BACK : KEY_MENU,
++					 0);
++			input_report_key(sdata->input,
++					 sdata->key_swap ? KEY_MENU : KEY_BACK,
++					 0);
++			input_sync(sdata->input);
++			sdata->key_state = 0;
++		}
++
++		sdata->key_swap = swap;
++	}
++
++	mutex_unlock(&sdata->key_mutex);
++
++	return count;
++}
++
++static DEVICE_ATTR_RW(key_swap);
+ static DEVICE_ATTR_RO(debug_state);
+ static DEVICE_ATTR_RO(chip_id);
+ static DEVICE_ATTR_RO(fw_ver);
+ static DEVICE_ATTR_RO(config_version);
+ 
+ static struct attribute *stmfts_sysfs_attrs[] = {
++	&dev_attr_key_swap.attr,
+ 	&dev_attr_debug_state.attr,
+ 	&dev_attr_chip_id.attr,
+ 	&dev_attr_fw_ver.attr,
+@@ -923,6 +1002,7 @@ static int stmfts_probe(struct i2c_client *client)
+ 	i2c_set_clientdata(client, sdata);
+ 	sdata->client = client;
+ 	mutex_init(&sdata->mutex);
++	mutex_init(&sdata->key_mutex);
+ 
+ 	sdata->avdd = devm_regulator_get(&client->dev, "avdd");
+ 	if (IS_ERR(sdata->avdd))
+-- 
+2.47.3
+

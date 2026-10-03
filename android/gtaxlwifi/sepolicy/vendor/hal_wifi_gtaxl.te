@@ -1,0 +1,4 @@
+# WoWLAN (§68): libwifi-hal-gtaxl reads wlan0's IPv4 address for the ARP
+# request pattern. /proc/net/fib_trie is 0400 root on Android; so
+# SIOCGIFADDR on the UDP socket the HAL already uses for the other ioctls.
+allowxperm hal_wifi_default self:udp_socket ioctl SIOCGIFADDR;

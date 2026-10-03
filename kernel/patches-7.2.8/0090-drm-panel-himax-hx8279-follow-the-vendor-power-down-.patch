@@ -1,0 +1,96 @@
+From c548f73b262e7f32516c7aa6a2fd25a92e2de4e8 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 09:00:55 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: follow the vendor power-down
+ sequence
+
+unprepare() sends DCS enter_sleep_mode and waits 130 ms before the
+regulators go. The vendor driver for this DriverIC never sends 0x10 at
+all: it writes page 0 register 0xb3 = 0x8c (display off, backlight off),
+waits 50 ms, writes register 0xb2 = 0x00 (sleep in) and waits 120 ms.
+DCS reads on this link time out (-110), so the DriverIC clearly does not
+implement the full standard command set, and there is no way to check
+whether 0x10 was understood.
+
+If it was not, the panel is still driving the glass when the supplies
+are cut, on every screen off. On gtaxlwifi that shows up as horizontal
+stripes at line pitch after a wake-up, in a different place each time,
+getting worse with each power cycle, fading after some hours powered
+down, and visible under the bootloader as well - a DC residue on
+alternate lines, not a register: a striped wake-up and a clean one have
+byte-identical DSIM and DECON register dumps and identical logs.
+
+Send the vendor sequence instead. The page lock is held across it so a
+backlight update cannot switch pages in the middle.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 37 +++++++++++++++++++---
+ 1 file changed, 33 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index f113054339..5f0bba70d2 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -35,6 +35,10 @@
+ 
+ /* Page 0 - Driver/Module Configuration */
+ #define HX8279_P0_MODULE_ID		0xb1
++#define HX8279_P0_SLEEP_CTRL		0xb2
++ #define HX8279_P0_SLEEP_IN		0x00
++#define HX8279_P0_DISPLAY_CTRL		0xb3
++ #define HX8279_P0_DISPLAY_OFF_BL_OFF		0x8c
+ #define HX8279_P0_UNKNOWN_B6		0xb6
+ #define HX8279_P0_UNKNOWN_BA		0xba
+ #define HX8279_P0_VGHS			0xbf
+@@ -1155,20 +1159,45 @@ static int hx8279_unprepare(struct drm_panel *panel)
+ 	struct hx8279 *hx = to_hx8279(panel);
+ 	struct mipi_dsi_device *dsi = hx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
++	const u8 cmd_display_off[] = { HX8279_P0_DISPLAY_CTRL,
++				       HX8279_P0_DISPLAY_OFF_BL_OFF };
++	const u8 cmd_sleep_in[] = { HX8279_P0_SLEEP_CTRL, HX8279_P0_SLEEP_IN };
+ 
++	/*
++	 * The vendor driver never sends DCS enter_sleep_mode to this
++	 * DriverIC: it turns the display and the backlight off through
++	 * page 0 register 0xb3, waits 50 ms, and puts the panel to sleep
++	 * through register 0xb2, waiting 120 ms before the rails go. If
++	 * 0x10 is not implemented here, the panel is still driving when
++	 * the supplies are cut on every screen off, which leaves a DC
++	 * residue on alternate lines: the line-pitch horizontal stripes
++	 * seen after a wake-up, worse with each cycle, fading after hours
++	 * powered down, and visible in the bootloader too because they
++	 * are in the glass and not in any register. Follow the vendor.
++	 *
++	 * The page lock is held across the whole sequence: a backlight
++	 * update must not switch pages in the middle of it, and it has
++	 * nothing to do once prepared is false anyway.
++	 */
+ 	mutex_lock(&hx->page_lock);
+ 	hx->prepared = false;
++
++	hx8279_set_page(hx, &dsi_ctx, 0);
++	mipi_dsi_generic_write_multi(&dsi_ctx, cmd_display_off,
++				     ARRAY_SIZE(cmd_display_off));
++	mipi_dsi_msleep(&dsi_ctx, 50);
++	mipi_dsi_generic_write_multi(&dsi_ctx, cmd_sleep_in,
++				     ARRAY_SIZE(cmd_sleep_in));
++	mipi_dsi_msleep(&dsi_ctx, 120);
+ 	mutex_unlock(&hx->page_lock);
+ 
+-	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+-	mipi_dsi_msleep(&dsi_ctx, 130);
++	dev_info(&dsi->dev, "unprepare: vendor exit sequence, err %d\n",
++		 dsi_ctx.accum_err);
+ 
+ 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+ 	if (hx->dsi[1])
+ 		hx->dsi[1]->mode_flags &= ~MIPI_DSI_MODE_LPM;
+ 
+-	dev_info(&dsi->dev, "unprepare: enter sleep, err %d\n", dsi_ctx.accum_err);
+-
+ 	hx8279_power_off(hx);
+ 
+ 	return dsi_ctx.accum_err;
+-- 
+2.47.3
+

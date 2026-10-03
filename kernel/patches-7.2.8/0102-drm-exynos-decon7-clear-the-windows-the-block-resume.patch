@@ -1,0 +1,66 @@
+From 8301de94a4215d0e728f3a103f092349bf702782 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 17 Sep 2026 18:07:12 +0200
+Subject: [PATCH] drm/exynos: decon7: clear the windows the block resumes with
+
+The SysMMU raises an unrecoverable read fault for the display controller
+a few seconds after the panel wakes up, and it survives 0101: the window
+disable at suspend is now latched, and the fault still happens at the
+same rate (one in 20 cycles before, one in 14 after).
+
+The suspend path is therefore not where the stale configuration comes
+from. decon_init() resets the block and programs VIDOUTCON0, VCLKCON0,
+VIDCON1, BLENDCON and WINCHMAP0, but it clears no window: whatever
+WINCONx_ENWIN and VIDWxxADD0 the block had before the suspend are still
+there when decon_atomic_flush() releases the protection of every window
+and starts the scanout. The window is latched as it was, DECON fetches
+the buffer it had before the suspend, and by then userspace may well
+have released it - which is the fault:
+
+  exynos-sysmmu 14860000.iommu: 14830000.display-controller: [READ]
+  PAGE FAULT occurred at 0xfde01fc0
+  Kernel panic - not syncing: Unrecoverable System MMU Fault!
+
+decon_clear_channels() already does exactly this clearing, but it runs
+once at probe, against what the bootloader left behind; a resume needs
+the same treatment. Do it after the reset, while the scanout is still
+off, so no vsync wait is needed.
+---
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index 7e8bfe4cd3..01064c6473 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -720,6 +720,27 @@ static void decon_init(struct decon_context *ctx)
+ 		val |= WINCHMAP_DMA(win, win);
+ 	}
+ 	writel(val, ctx->regs + WINCHMAP0);
++
++	/*
++	 * Neither the reset nor the programming above clears the per-window
++	 * configuration. decon_clear_channels() does that, but it only runs
++	 * at probe, against what the bootloader left behind. Do the same here
++	 * so that a window left enabled before the suspend cannot be latched
++	 * again by the unprotect in decon_atomic_flush(): it would point at a
++	 * buffer that userspace has since released, and DECON would fetch it
++	 * as soon as scanout resumes.
++	 */
++	for (win = 0; win < WINDOWS_NR; win++) {
++		decon_shadow_protect_win(ctx, win, true);
++		val = readl(ctx->regs + WINCON(win));
++		val &= ~WINCONx_ENWIN;
++		writel(val, ctx->regs + WINCON(win));
++		decon_shadow_protect_win(ctx, win, false);
++	}
++
++	val = readl(ctx->regs + DECON_UPDATE);
++	val |= DECON_UPDATE_STANDALONE_F;
++	writel(val, ctx->regs + DECON_UPDATE);
+ }
+ 
+ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
+-- 
+2.47.3
+

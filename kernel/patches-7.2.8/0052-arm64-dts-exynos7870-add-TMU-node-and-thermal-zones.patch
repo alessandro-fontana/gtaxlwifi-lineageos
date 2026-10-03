@@ -1,0 +1,174 @@
+From 284958156ddafc5b57b7c01e4025b8ea59571671 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:52 +0000
+Subject: [PATCH] arm64: dts: exynos7870: add TMU node and thermal zones
+
+One physical probe for the whole SoC (the downstream's three "instances"
+are the same base 0x10130000 with different trip tables), so: one tmu
+node, one thermal zone, cooling maps for both CPU clusters and the GPU.
+
+The tmu node takes all six PERI gates: the register file aborts without
+the CPUCL0 APB gate and gating a probe sclk while the block is live
+hangs the interconnect (silicon-verified), so the driver (0077) enables
+them in bulk. IRQ is GIC SPI 435 (downstream DT).
+
+Trips and clips are the ECT AP_THERMAL truth decoded from this SoC's
+parameter ROM, with 5C bands (hysteresis 5000): GPU steps at 86/91/96/
+101C (845/728/545/343 MHz), CPU steps at 91C (1248 MHz) and 101C
+(546 MHz). The vendor 76/81C steps clip at 1690/1586 which is at or
+above this unit's lawful maximum - no-ops, omitted. The vendor CPUCL1
+hotplug above 96C becomes deep throttling on both clusters. The vendor
+HW_TRIP at 115C becomes the critical trip. Maps are pinned [n,n] to
+reproduce the vendor fixed-clip bands.
+
+#cooling-cells on cpu0/cpu4 makes cpufreq-dt register the two policy
+cooling devices; on the gpu node it finally gives panfrost its devfreq
+cooling device (goodbye "Failed to register cooling device").
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 102 +++++++++++++++++++++
+ 1 file changed, 102 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index b10c3ab045..783a7467eb 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -70,6 +70,7 @@ cpu0: cpu@0 {
+ 			enable-method = "psci";
+ 			clocks = <&cmu_cpucl0 CLK_CLUSTER0_SCLK>;
+ 			clock-names = "cluster0_clk";
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu1: cpu@1 {
+@@ -100,6 +101,7 @@ cpu4: cpu@100 {
+ 			enable-method = "psci";
+ 			clocks = <&cmu_cpucl1 CLK_CLUSTER1_SCLK>;
+ 			clock-names = "cluster1_clk";
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu5: cpu@101 {
+@@ -157,6 +159,80 @@ psci {
+ 		cpu_on = <0xc4000003>;
+ 	};
+ 
++	/*
++	 * Zona termica unica (una sonda per tutto il SoC, vedi nodo tmu).
++	 * Trip e clip dal blocco AP_THERMAL dell'ECT (verita' vendor,
++	 * decodificata dal silicio): bande da 5 C -> hysteresis 5000.
++	 * I gradini vendor a 76/81 C (clip 1690/1586) sono no-op sul nostro
++	 * esemplare (tetto lecito 1586) e non compaiono. L'hotplug vendor di
++	 * CPUCL1 sopra i 96 C e' tradotto in throttle profondo su entrambi i
++	 * cluster (con una sonda sola la distinzione per-cluster era
++	 * comunque contabile). HW_TRIP vendor a 115 C -> trip critical.
++	 *
++	 * Stati cooling CPU (OPP 0..12): 3 = 1248 MHz, 10 = 546 MHz.
++	 * Stati cooling GPU (OPP 0..6): 1 = 845, 2 = 728, 4 = 545, 6 = 343.
++	 * Le mappe sono inchiodate [n,n]: emulazione fedele delle bande
++	 * vendor (clip fisso per banda), non una rampa step_wise.
++	 */
++	thermal-zones {
++		soc_thermal: soc-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&tmu>;
++
++			trips {
++				soc_alert0: soc-alert0 {
++					temperature = <86000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++				soc_alert1: soc-alert1 {
++					temperature = <91000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++				soc_alert2: soc-alert2 {
++					temperature = <96000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++				soc_alert3: soc-alert3 {
++					temperature = <101000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++				soc_crit: soc-crit {
++					temperature = <115000>;
++					hysteresis = <0>;
++					type = "critical";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&soc_alert0>;
++					cooling-device = <&gpu 1 1>;
++				};
++				map1 {
++					trip = <&soc_alert1>;
++					cooling-device = <&cpu0 3 3>,
++							 <&cpu4 3 3>,
++							 <&gpu 2 2>;
++				};
++				map2 {
++					trip = <&soc_alert2>;
++					cooling-device = <&gpu 4 4>;
++				};
++				map3 {
++					trip = <&soc_alert3>;
++					cooling-device = <&cpu0 10 10>,
++							 <&cpu4 10 10>,
++							 <&gpu 6 6>;
++				};
++			};
++		};
++	};
++
+ 	soc: soc@0 {
+ 		compatible = "simple-bus";
+ 		ranges = <0x0 0x0 0x0 0x20000000>;
+@@ -169,6 +245,31 @@ chipid@10100000 {
+ 			reg = <0x10100000 0x100>;
+ 		};
+ 
++		/*
++		 * TMU: UNA sola sonda fisica (TEM1455X) per tutto il SoC.
++		 * Le tre "istanze" del downstream (CPUCL0/CPUCL1/G3D) sono la
++		 * stessa base 0x10130000 con trip diversi. Sei gate PERI per un
++		 * blocco solo: il register file muore senza l'APB CPUCL0, e
++		 * spegnere un sclk a blocco vivo appende l'interconnect
++		 * (verificato sul silicio, a caro prezzo): il driver li tiene
++		 * tutti accesi in bulk.
++		 */
++		tmu: thermal-sensor@10130000 {
++			compatible = "samsung,exynos7870-tmu";
++			reg = <0x10130000 0x200>;
++			interrupts = <GIC_SPI 435 IRQ_TYPE_LEVEL_HIGH>;
++			clock-names = "tmu_cpucl0_apbif", "tmu_cpucl1_apbif",
++				      "tmu_apbif", "tmu_cpucl0_sclk",
++				      "tmu_cpucl1_sclk", "tmu_sclk";
++			clocks = <&cmu_peri CLK_GOUT_PERI_SFRIF_TMU_CPUCL0_PCLK>,
++				 <&cmu_peri CLK_GOUT_PERI_SFRIF_TMU_CPUCL1_PCLK>,
++				 <&cmu_peri CLK_GOUT_PERI_SFRIF_TMU_PCLK>,
++				 <&cmu_peri CLK_GOUT_PERI_TMU_CPUCL0_CLK>,
++				 <&cmu_peri CLK_GOUT_PERI_TMU_CPUCL1_CLK>,
++				 <&cmu_peri CLK_GOUT_PERI_TMU_CLK>;
++			#thermal-sensor-cells = <0>;
++		};
++
+ 		cmu_peri: clock-controller@101f0000 {
+ 			compatible = "samsung,exynos7870-cmu-peri";
+ 			reg = <0x101f0000 0x1000>;
+@@ -298,6 +399,7 @@ pinctrl_mif: pinctrl@10530000 {
+ 		};
+ 
+ 		gpu: gpu@11400000 {
++			#cooling-cells = <2>;
+ 			compatible = "samsung,exynos7870-mali", "arm,mali-t830";
+ 			reg = <0x11400000 0x5000>;
+ 			interrupt-names = "job", "mmu", "gpu";
+-- 
+2.47.3
+

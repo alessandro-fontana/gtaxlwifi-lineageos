@@ -1,0 +1,160 @@
+From 4e4ae8b878b9f8a78b178bbc38efd5ddb1df5176 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 26 Aug 2026 21:00:00 +0000
+Subject: [PATCH] ASoC: samsung: gtaxl: feed the codec MCLK and use the vendor
+ PLL reference
+
+The board wires the RT5659 MCLK pin to the SoC PMU CLKOUT pad.  The
+vendor enables that pad on every stream open as the "oscclk_aud" clock
+(pwrcal: PMU_DEBUG CLKOUT_SEL[12:8] = 0x1f selecting the 26 MHz OSCCLK,
+CLKOUT_DISABLE cleared) and, at 48 kHz, references the codec PLL1 to
+that MCLK; only at 192 kHz does it use BCLK1.
+
+This driver deliberately departed from that recipe (see the 0085 log:
+"removing the dependency on the PMU CLKOUT MCLK pad which is not yet
+modelled") and ran PLL1 from BCLK1 alone with the pad dead.  Playback
+tolerates it.  The I2S1 TX does not: the codec has never produced
+capture data in that configuration -- it transmits all-zero frames with
+every readable register on the digital capture path verified correct
+(power, mutes, muxes, digital volumes, I2S1_SDP, TDM_CTRL_1/2,
+STO_DAC_MIXER, AD_DA_MIXER), with the ASRC in all three tested
+configurations (filter tracking on, off, and interface ASRC bit
+cleared live), with pin muxing verified at the SoC pad and with a
+26 MHz clock present on the MCLK pad alone (PMU poked at runtime, PLL
+still on BCLK1).  The MCLK-referenced PLL is the one remaining
+difference from the vendor configuration.
+
+Enable the CLKOUT pad at card probe and restore the vendor's per-rate
+PLL reference.  The pad poke through PMU_DEBUG is experiment-grade; if
+this proves to be the fix, the production shape is an exynos-clkout
+clock referenced from the card node, enabled per-stream like the
+vendor does.
+
+Downstream reference: sound/soc/samsung/universal7870-rt5659.c
+(universal7870_set_mclk(), aif1 hw_params) and
+drivers/soc/samsung/pwrcal/S5E7870/S5E7870-vclk.c
+(pxmxdx_oscclk_aud_grp).
+---
+ sound/soc/samsung/gtaxl_rt5659.c | 69 ++++++++++++++++++++++++++------
+ 1 file changed, 56 insertions(+), 13 deletions(-)
+
+diff --git a/sound/soc/samsung/gtaxl_rt5659.c b/sound/soc/samsung/gtaxl_rt5659.c
+index 41883b43a5..06addf7abb 100644
+--- a/sound/soc/samsung/gtaxl_rt5659.c
++++ b/sound/soc/samsung/gtaxl_rt5659.c
+@@ -18,6 +18,7 @@
+  * bus clock itself.
+  */
+ 
++#include <linux/io.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+@@ -54,6 +55,19 @@
+  */
+ #define GTAXL_BFS_AMP		64
+ 
++/*
++ * The codec MCLK pin is wired to the SoC PMU CLKOUT pad.  The vendor
++ * enables it as the "oscclk_aud" clock: PMU_DEBUG CLKOUT_SEL[12:8] all
++ * set (0x1f selects the 26 MHz OSCCLK) and CLKOUT_DISABLE (bit 0)
++ * cleared.  At 48 kHz the vendor references the codec PLL1 to this
++ * MCLK; this driver historically ran PLL1 from BCLK1 with the pad
++ * dead.
++ */
++#define GTAXL_MCLK_FREQ		26000000U
++#define GTAXL_PMU_DEBUG		0x10480a00
++#define GTAXL_PMU_CLKOUT_MASK	0x1f01
++#define GTAXL_PMU_CLKOUT_ON	0x1f00
++
+ static int gtaxl_aif1_hw_params(struct snd_pcm_substream *substream,
+ 				struct snd_pcm_hw_params *params)
+ {
+@@ -62,7 +76,8 @@ static int gtaxl_aif1_hw_params(struct snd_pcm_substream *substream,
+ 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 1);
+ 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 	unsigned int rate = params_rate(params);
+-	unsigned int rfs, bfs, codec_pll, bclk;
++	unsigned int rfs, bfs, codec_pll, pll_in;
++	int pll_src;
+ 	int ret;
+ 
+ 	switch (rate) {
+@@ -111,20 +126,29 @@ static int gtaxl_aif1_hw_params(struct snd_pcm_substream *substream,
+ 	}
+ 
+ 	/*
+-	 * Codec: PLL1 from BCLK1, SYSCLK from PLL1.
++	 * Codec: PLL1 -> SYSCLK, with the vendor's per-rate reference.
+ 	 *
+-	 * The PLL reference is the BCLK the codec actually receives on
+-	 * the mixer's AMP port, which is 64fs, not the AP-side bfs that
+-	 * only describes the mixer input.  At 48 kHz the two differ by
+-	 * two: declaring 32fs made rl6231_pll_calc() pick a x16 ratio
+-	 * for a reference that is really 3.072 MHz, so PLL1 ran at
+-	 * 49.152 MHz (1024fs) while set_sysclk() below told the codec
+-	 * 24.576 MHz (512fs) and its converter dividers were programmed
+-	 * from that figure.
++	 * At 48 kHz the vendor references PLL1 to the 26 MHz MCLK from
++	 * the PMU CLKOUT pad; only at 192 kHz does it use BCLK1, which
++	 * on this board is the AMP-port bit clock, 64fs (GTAXL_BFS_AMP:
++	 * the AP-side bfs is not the clock the codec sees).
++	 *
++	 * Referencing PLL1 to BCLK1 at 48 kHz too was this driver's one
++	 * deliberate departure from the vendor recipe.  Playback
++	 * tolerates it, but the I2S1 TX has never produced data in that
++	 * configuration: the codec transmits all-zero frames with every
++	 * readable register on the capture path correct.  Restore
++	 * vendor parity to test whether the TX serialiser needs the
++	 * MCLK-referenced PLL.
+ 	 */
+-	bclk = rate * GTAXL_BFS_AMP;
+-	ret = snd_soc_dai_set_pll(codec_dai, 0, RT5659_PLL1_S_BCLK1,
+-				  bclk, codec_pll);
++	if (rate == 192000) {
++		pll_src = RT5659_PLL1_S_BCLK1;
++		pll_in = rate * GTAXL_BFS_AMP;
++	} else {
++		pll_src = RT5659_PLL1_S_MCLK;
++		pll_in = GTAXL_MCLK_FREQ;
++	}
++	ret = snd_soc_dai_set_pll(codec_dai, 0, pll_src, pll_in, codec_pll);
+ 	if (ret < 0) {
+ 		dev_err(rtd->card->dev, "failed to set codec PLL: %d\n", ret);
+ 		return ret;
+@@ -275,6 +299,7 @@ static int gtaxl_audio_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct snd_soc_card *card = &gtaxl_card;
+ 	struct snd_soc_dai_link *link = &gtaxl_dai_links[0];
++	void __iomem *pmu_debug;
+ 	int ret;
+ 
+ 	card->dev = dev;
+@@ -305,6 +330,24 @@ static int gtaxl_audio_probe(struct platform_device *pdev)
+ 	link->codecs[0].of_node = mixer_node;
+ 	link->codecs[1].of_node = codec_node;
+ 
++	/*
++	 * Feed the codec MCLK pin: the board wires it to the SoC PMU
++	 * CLKOUT pad, which the vendor enables as the "oscclk_aud"
++	 * clock (PMU_DEBUG CLKOUT_SEL[12:8] = 0x1f -> OSCCLK 26 MHz,
++	 * CLKOUT_DISABLE cleared).  Poking PMU_DEBUG directly and
++	 * leaving the pad always on is an experiment-grade shortcut;
++	 * the production shape is an exynos-clkout clock referenced
++	 * from the card node and gated per stream.
++	 */
++	pmu_debug = ioremap(GTAXL_PMU_DEBUG, 4);
++	if (!pmu_debug) {
++		ret = -ENOMEM;
++		goto out_put;
++	}
++	writel((readl(pmu_debug) & ~GTAXL_PMU_CLKOUT_MASK) |
++	       GTAXL_PMU_CLKOUT_ON, pmu_debug);
++	iounmap(pmu_debug);
++
+ 	ret = devm_snd_soc_register_card(dev, card);
+ 	if (ret < 0)
+ 		dev_err_probe(dev, ret, "failed to register card\n");
+-- 
+2.47.3
+

@@ -1,0 +1,47 @@
+From 9343f83e6449c87745e1af6913730933a4e51251 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 16:24:45 +0200
+Subject: [PATCH] media: i2c: s5k4h5yc: offer the full resolution mode by
+ default
+
+The Android HAL now keeps preview and video streams within the binned
+mode and captures full resolution stills in a separate configuration,
+so the full resolution mode is no longer picked for video by accident.
+Offer it by default; full_resolution=0 hides it for userspace that
+would.
+
+---
+ drivers/media/i2c/s5k4h5yc.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/media/i2c/s5k4h5yc.c b/drivers/media/i2c/s5k4h5yc.c
+index fc333620d0..3e061f8385 100644
+--- a/drivers/media/i2c/s5k4h5yc.c
++++ b/drivers/media/i2c/s5k4h5yc.c
+@@ -371,15 +371,16 @@ static const struct s5k4h5yc_mode s5k4h5yc_modes[] = {
+ };
+ 
+ /*
+- * The full resolution mode is off by default. A software ISP crops rather
+- * than scales, so any stream wider than the binned mode selects it and gets
+- * a 1:1 crop of the centre: a narrower field of view, a quarter of the
+- * light per output pixel and a slower frame rate, for video in particular.
+- * It is only worth it for a full resolution still capture.
++ * The full resolution mode is only worth it for a still capture. A software
++ * ISP crops rather than scales, so a stream wider than the binned mode that
++ * selects it gets a 1:1 crop of the centre: a narrower field of view, less
++ * light per output pixel and a slower frame rate. Userspace keeps preview
++ * and video streams within the binned mode (the Android HAL's
++ * max_stream_size); turn it off for userspace that does not.
+  */
+-static bool full_resolution;
++static bool full_resolution = true;
+ module_param(full_resolution, bool, 0444);
+-MODULE_PARM_DESC(full_resolution, "Offer the 3280x2458 mode (default: off)");
++MODULE_PARM_DESC(full_resolution, "Offer the 3280x2458 mode (default: on)");
+ 
+ static unsigned int s5k4h5yc_num_modes(void)
+ {
+-- 
+2.47.3
+

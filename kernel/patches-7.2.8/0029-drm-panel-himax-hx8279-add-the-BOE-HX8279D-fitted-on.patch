@@ -1,0 +1,149 @@
+From ec344c24b2ebab8707e57ab3aac5d46fb4c70ea9 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 14:41:06 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: add the BOE HX8279D fitted on
+ gtaxlwifi
+
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 123 +++++++++++++++++++++
+ 1 file changed, 123 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index f036b60ec2..df31779085 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -1585,8 +1585,131 @@ static const struct hx8279_panel_desc startek_kd070fhfid078 = {
+ 	.src_delay_time_adj_ck = 72,
+ };
+ 
++static const struct hx8279_panel_mode boe_hx8279d_gtaxl_modes[] = {
++	{
++		.mode = {
++			.clock = 159610,
++			.hdisplay = 1200,
++			.hsync_start = 1200 + 120,
++			.hsync_end = 1200 + 120 + 8,
++			.htotal = 1200 + 120 + 8 + 32,
++			.vdisplay = 1920,
++			.vsync_start = 1920 + 16,
++			.vsync_end = 1920 + 16 + 4,
++			.vtotal = 1920 + 16 + 4 + 16,
++			.width_mm = 135,
++			.height_mm = 216,
++			.type = DRM_MODE_TYPE_DRIVER
++		},
++		.bpc = 8,
++		.is_video_mode = true,
++	},
++};
++
++/*
++ * The vendor driver leaves six of the twenty mux registers per side at
++ * their reset value: those are marked as -1 here.
++ */
++static const struct hx8279_goa_mux boe_hx8279d_gtaxl_gmux = {
++	.gout_l = { 0x05, 0x05, 0x0b, 0x0b, 0x09, 0x09,   -1,   -1, 0x00, 0x00,
++		    0x07, 0x07, 0x26, 0x26,   -1,   -1,   -1,   -1, 0x03, 0x03 },
++	.gout_r = { 0x06, 0x06, 0x0c, 0x0c, 0x0a, 0x0a,   -1,   -1, 0x00, 0x00,
++		    0x08, 0x08, 0x26, 0x26,   -1,   -1,   -1,   -1, 0x04, 0x04 },
++};
++
++static const struct hx8279_analog_gamma boe_hx8279d_gtaxl_ana_gamma = {
++	.pos = { 0x00, 0x07, 0x10, 0x1f, 0x32, 0x35, 0x38, 0x3a, 0x3e,
++		 0x3f, 0x3f, 0x3f, 0x3f, 0x37, 0x36, 0x34, 0x07 },
++	.neg = { 0x00, 0x07, 0x10, 0x1f, 0x32, 0x35, 0x38, 0x3a, 0x3e,
++		 0x3f, 0x3f, 0x3f, 0x3f, 0x37, 0x36, 0x34, 0x07 },
++};
++
++/*
++ * The vendor tables only program the two middle high-bit registers; the
++ * remaining four are the only values that keep the reconstructed 10 bit
++ * curve monotonic, and match what the sibling CPT table writes out.
++ */
++static const struct hx8279_digital_gamma boe_hx8279d_gtaxl_dig_gamma = {
++	.r = { 0x08, 0x08, 0x11, 0x24, 0x37, 0x48, 0x60, 0x79, 0xb9, 0xf8,
++	       0x71, 0xe9, 0xed, 0x67, 0xe4, 0x25, 0x63, 0x84, 0x9c, 0xa6,
++	       0xb1, 0xbd, 0xc4, 0xc8, 0x00, 0x00, 0x05, 0x6b, 0xff, 0xff },
++	.g = { 0x04, 0x06, 0x11, 0x24, 0x38, 0x49, 0x61, 0x79, 0xb9, 0xf8,
++	       0x71, 0xea, 0xed, 0x68, 0xe5, 0x26, 0x64, 0x85, 0x9c, 0xa7,
++	       0xb1, 0xbd, 0xc4, 0xc8, 0x00, 0x00, 0x05, 0x6b, 0xff, 0xff },
++	.b = { 0x0c, 0x0c, 0x0f, 0x23, 0x37, 0x48, 0x60, 0x77, 0xb8, 0xf7,
++	       0x6f, 0xe6, 0xea, 0x62, 0xda, 0x1a, 0x56, 0x75, 0x91, 0x9c,
++	       0xa5, 0xaf, 0xb5, 0xb8, 0x00, 0x00, 0x05, 0x6b, 0xff, 0xff },
++};
++
++static const struct hx8279_panel_desc boe_hx8279d_gtaxl = {
++	.dsi_info = {
++		.type = "HX8279D-BOE2",
++		.channel = 0,
++		.node = NULL,
++	},
++	.mode_data = boe_hx8279d_gtaxl_modes,
++	.num_modes = ARRAY_SIZE(boe_hx8279d_gtaxl_modes),
++	.num_lanes = 4,
++
++	/* Driver/Module Configuration: LC Matrix voltages */
++	.vgh_mv = 15000,
++	.vgl_mv = 11200,
++	.vgph_mv = 4600,
++	.vgnh_mv = 4600,
++	.vgpl_sel = 0x02,
++	.vgnl_sel = 0x02,
++	.mod_unk_b6 = 0x03,
++	.mod_unk_ba = 0x87,
++
++	/* Analog Gamma correction */
++	.agamma = &boe_hx8279d_gtaxl_ana_gamma,
++
++	/* Gate driver On Array (GOA) Muxing */
++	.gmux = &boe_hx8279d_gtaxl_gmux,
++
++	/* Gate driver On Array (GOA) Configuration */
++	.goa_odd_timing = { 0, 0, 0, 42, 0, 0 },
++	.goa_even_timing = { 0, 42, 0, 0, 0, 0 },
++	.goa_stv_lead_time_ck = 11,
++	.goa_ckv_lead_time_ck = 7,
++	.goa_ckv_dummy_vblank_num = 3,
++	.goa_ckv_rise_precharge = 40,
++	.goa_clr_polarity = { -1, -1, -1, -1 },
++	.goa_clr_start_pos = { -1, -1, -1, -1 },
++	.goa_unk_e4 = 0xc0,
++	.goa_unk_e5 = 0x0d,
++	.goa_unk_e7 = 0x00,
++
++	/* MIPI Configuration */
++	.eotp_ctl = 0xe5,
++	.bta_tlpx = 2,
++	.lhs_settle_time_by_osc25 = true,
++	.ths_settle_time = 2,
++
++	/* Backlight over DSI */
++	.bl_duty_max = 199,
++	.bl_pwm_freq = 0x02,
++	.bl_unk_b6 = 0x02,
++
++	/* ENG/Gamma Configuration */
++	.gamma_ctl = FIELD_PREP_CONST(HX8279_P6_GAMMA_POCGM_CTL, 3) |
++		     FIELD_PREP_CONST(HX8279_P6_GAMMA_POGCMD_CTL, 3),
++	.volt_adj = FIELD_PREP_CONST(HX8279_P6_VOLT_ADJ_VCCIFS, 3) |
++		    FIELD_PREP_CONST(HX8279_P6_VOLT_ADJ_VCCS, 3),
++	.src_delay_time_adj_ck = 50,
++
++	/* Digital Gamma Adjustment */
++	.dgamma = &boe_hx8279d_gtaxl_dig_gamma,
++
++	/* Power sequencing, from the vendor board file */
++	.iovcc_to_vdd_delay_ms = 10,
++	.vdd_to_reset_delay_ms = 15,
++	.reset_pulse_ms = 10,
++};
++
+ static const struct of_device_id hx8279_of_match[] = {
+ 	{ .compatible = "aoly,sl101pm1794fog-v15", .data = &aoly_sl101pm1794fog_v15 },
++	{ .compatible = "boe,hx8279d-gtaxl", .data = &boe_hx8279d_gtaxl },
+ 	{ .compatible = "startek,kd070fhfid078", .data = &startek_kd070fhfid078 },
+ 	{ /* sentinel */ }
+ };
+-- 
+2.47.3
+

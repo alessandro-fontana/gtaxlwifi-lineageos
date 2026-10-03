@@ -1,0 +1,38 @@
+# Partitions by GPT name (§65.8): the by-name links are created by Android's
+# ueventd thanks to androidboot.boot_devices (§41), and ueventd labels the
+# mmcblk0pN node with the best-matching rule among its links.
+# Until 27/09 they were by number (§38), when by-name did not exist yet.
+/dev/block/by-name/OTA        u:object_r:gtaxl_entropy_seed_block_device:s0
+/dev/block/by-name/CACHE      u:object_r:cache_block_device:s0
+/dev/block/by-name/USERDATA   u:object_r:userdata_block_device:s0
+/dev/block/by-name/metadata   u:object_r:metadata_block_device:s0
+/dev/block/by-name/misc       u:object_r:misc_block_device:s0
+/dev/block/by-name/super      u:object_r:super_block_device:s0
+
+# Entropy seed (§43.6): the domain comes from the transition on this type.
+/vendor/bin/gtaxl-entropy-seed\.sh   u:object_r:gtaxl_entropy_seed_exec:s0
+/vendor/bin/bootsplash   u:object_r:gtaxl_bootsplash_exec:s0
+
+# vendor.lineage.touch HAL (§50.9): the hal_lineage_touch_default domain
+# comes from the transition on this type, defined by LineageOS.
+/vendor/bin/hw/vendor\.lineage\.touch-service\.gtaxlwifi   u:object_r:hal_lineage_touch_default_exec:s0
+
+# GPS (§54). ttySAC0 is the BCM4752 UART: gnss_device is the AOSP type
+# for GNSS receiver nodes. The HAL domain is the AOSP one.
+/dev/ttySAC0   u:object_r:gnss_device:s0
+/data/vendor/gps(/.*)?   u:object_r:gps_vendor_data_file:s0
+/vendor/bin/hw/gpsd   u:object_r:gpsd_exec:s0
+/vendor/bin/hw/android\.hardware\.gnss-service\.gtaxlwifi   u:object_r:hal_gnss_default_exec:s0
+/vendor/bin/gtaxl-gps-rfkill\.sh   u:object_r:gtaxl_gps_rfkill_exec:s0
+
+# Health HAL (§55): the domain is the AOSP one, as for the generic HAL; in
+# charging mode the same binary runs as charger_vendor (seclabel in the
+# .rc).
+/vendor/bin/hw/android\.hardware\.health-service\.gtaxlwifi   u:object_r:hal_health_default_exec:s0
+# Thermal HAL (§76)
+/vendor/bin/hw/android\.hardware\.thermal-service\.gtaxlwifi   u:object_r:hal_thermal_default_exec:s0
+
+# Camera (§57): AOSP labels only /dev/video*; the media graph and the
+# sensor subdevs are of the same nature and get the same type.
+/dev/media[0-9]*         u:object_r:video_device:s0
+/dev/v4l-subdev[0-9]*    u:object_r:video_device:s0

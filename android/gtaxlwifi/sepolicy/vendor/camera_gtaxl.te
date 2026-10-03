@@ -1,0 +1,45 @@
+# Camera (§57): libcamera AIDL provider, AOSP's hal_camera_default domain
+# (labelled by the APEX's apex_file_contexts). Only what the domain does not
+# already have, measured in permissive.
+
+# libcamera (DeviceEnumeratorSysfs) lists the media devices from
+# /sys/bus/media/devices.
+type sysfs_media_gtaxl, sysfs_type, fs_type;
+allow hal_camera_default sysfs_media_gtaxl:dir r_dir_perms;
+allow hal_camera_default sysfs_media_gtaxl:lnk_file read;
+
+# ...and follows the links down to the receiver's node, where it reads uevent.
+allow hal_camera_default sysfs_media_gtaxl:file r_file_perms;
+
+# Provider debug knobs (log levels, software ISP threads): vendor
+# properties that only the provider reads.
+vendor_internal_prop(vendor_camera_libcamera_prop)
+get_prop(hal_camera_default, vendor_camera_libcamera_prop)
+
+# Intermediate and JPEG buffers: the HAL allocates and maps with gralloc
+# (minigbm) in its own process.
+hal_client_domain(hal_camera_default, hal_graphics_allocator)
+allow hal_camera_default hal_graphics_mapper_service:service_manager find;
+get_prop(hal_camera_default, vendor_minigbm_prop)
+
+# The minigbm mapper (gbm_mesa) opens the GPU node in every process that
+# loads it: device/mainline/common gives gpu_access to system_server, SF and
+# apps, but not to the camera domains. Without it, in enforcing, drv_create()
+# fails in cameraserver (and minigbm fell back to logging a null driver).
+gpu_access(hal_camera_default)
+gpu_access(cameraserver)
+gpu_access(mediaserver)
+
+# Preview buffers come back from composition with an acquire fence created
+# by the composer (a sync_file of its domain): without this, the request
+# carrying it fails in binder (BR_FAILED_REPLY) and the camera closes
+# (when opening Aperture's settings, §57.11).
+allow hal_camera_default hal_graphics_composer_default:fd use;
+
+# Flash LED (SM5703, LED class): the HAL turns it on for the Android torch,
+# for FLASH_MODE_TORCH and for the photo flash (§57).
+type sysfs_camera_flash_gtaxl, fs_type, sysfs_type;
+allow hal_camera_default sysfs_camera_flash_gtaxl:dir search;
+allow hal_camera_default sysfs_camera_flash_gtaxl:file rw_file_perms;
+allow hal_camera_default sysfs_leds:dir search;
+allow hal_camera_default sysfs_leds:lnk_file read;

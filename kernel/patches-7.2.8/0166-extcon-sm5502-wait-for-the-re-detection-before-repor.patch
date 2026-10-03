@@ -1,0 +1,61 @@
+From d9d16d596474ec68cf729bc3fdcef53fc71b0924 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Mon, 28 Sep 2026 18:41:29 +0200
+Subject: [PATCH] extcon: sm5502: wait for the re-detection before reporting
+ the cable
+
+After the boot-time reset the cable type was read right away, before the
+chip had measured again, and the attach interrupt that should carry the
+result is sometimes lost while the configuration is being restored: the
+chip reported a CDP (DEV_TYPE1 0x20) while the extcon device kept SDP,
+and the charger stayed at 500 mA, on some boots and not on others. Poll
+DEV_TYPE1 until it is set and stable (200 ms here) before reporting.
+
+---
+ drivers/extcon/extcon-sm5502.c | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index f218de4e0c..9b1f944d07 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -727,12 +727,34 @@ static void sm5502_muic_detect_cable_wq(struct work_struct *work)
+ 	 * The reset opens the USB switch for a moment and every USB session
+ 	 * open at that point drops. Where that matters more than the charging
+ 	 * current - a recovery sideloading an update over adb - it can be
+-	 * turned off with extcon_sm5502.boot_redetect=0. Done earlier instead,
+-	 * 0.3 s after probe, the chip classifies a CDP as an SDP again.
++	 * turned off with extcon_sm5502.boot_redetect=0.
+ 	 */
+ 	if (boot_redetect) {
++		unsigned int type, prev = 0;
++		int i;
++
+ 		regmap_write(info->regmap, SM5502_REG_RESET, SM5502_REG_RESET_MASK);
+ 		sm5502_init_dev_type(info);
++
++		/*
++		 * The detection takes a while after the reset, and reading
++		 * the cable type right away races with it: the attach
++		 * interrupt that should carry the result is sometimes lost
++		 * while the configuration is being restored, and the chip
++		 * then says CDP (DEV_TYPE1 0x20) while the extcon device
++		 * keeps reporting SDP. Wait until the type is set and
++		 * stable before reporting it.
++		 */
++		for (i = 0; i < 20; i++) {
++			msleep(50);
++			if (regmap_read(info->regmap, SM5502_REG_DEV_TYPE1, &type))
++				continue;
++			if (type && type == prev)
++				break;
++			prev = type;
++		}
++		dev_info(info->dev, "re-detection: DEV_TYPE1 0x%02x after %d ms\n",
++			 prev, (i + 1) * 50);
+ 	}
+ 
+ 	/* Notify the state of connector cable or not  */
+-- 
+2.47.3
+

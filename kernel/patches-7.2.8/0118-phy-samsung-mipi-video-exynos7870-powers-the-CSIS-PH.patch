@@ -1,0 +1,56 @@
+From 16aaace864e662f56186d3bfcb6c748d57edde0a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 13:25:37 +0200
+Subject: [PATCH] phy: samsung: mipi-video: exynos7870 powers the CSIS PHYs in
+ the vendor order
+
+The vendor driver bypasses the isolation first and then pulses the
+reset, for the DSIM PHY and for the three CSIS PHYs alike. The DSIM
+PHY already follows that order (enable_before_reset); do the same for
+CSIS0-2, so that a receiver never comes out of reset while its PHY is
+still isolated.
+
+---
+ drivers/phy/samsung/phy-exynos-mipi-video.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/phy/samsung/phy-exynos-mipi-video.c b/drivers/phy/samsung/phy-exynos-mipi-video.c
+index e4809f8225..d9fea53b74 100644
+--- a/drivers/phy/samsung/phy-exynos-mipi-video.c
++++ b/drivers/phy/samsung/phy-exynos-mipi-video.c
+@@ -237,6 +237,7 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
+ 			.resetn_val = BIT(0),
+ 			.resetn_reg = 0,
+ 			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
++			.enable_before_reset = true,
+ 		}, {
+ 			/* EXYNOS_MIPI_PHY_ID_DSIM0 */
+ 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS0,
+@@ -256,6 +257,7 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
+ 			.resetn_val = BIT(1),
+ 			.resetn_reg = 0,
+ 			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
++			.enable_before_reset = true,
+ 		}, {
+ 			/* EXYNOS_MIPI_PHY_ID_CSIS2 */
+ 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+@@ -265,6 +267,7 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
+ 			.resetn_val = BIT(2),
+ 			.resetn_reg = 0,
+ 			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
++			.enable_before_reset = true,
+ 		},
+ 	},
+ };
+@@ -297,6 +300,8 @@ static int __set_phy_state(const struct exynos_mipi_phy_desc *data,
+ 		 * still isolated, so it powers up without one: on exynos7870
+ 		 * the DSI PLL then locks only sometimes, and the DSIM link
+ 		 * registers clocked from the PHY hang the bus when touched.
++		 * The CSIS PHYs get the same order, which is the one the
++		 * vendor driver uses for every PHY of this SoC.
+ 		 */
+ 		if (on) {
+ 			regmap_update_bits(enable_map, data->enable_reg,
+-- 
+2.47.3
+

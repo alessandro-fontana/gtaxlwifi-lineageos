@@ -1,0 +1,221 @@
+From 613a48213b2ae54a066b23e940412c17bafa8d28 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 14:39:55 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: support the DriverIC internal
+ backlight
+
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 128 ++++++++++++++++++++-
+ 1 file changed, 126 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 78a1e2d469..282823ce4f 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -6,10 +6,13 @@
+  *                    AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+  */
+ 
++#include <linux/backlight.h>
+ #include <linux/bitfield.h>
++#include <linux/cleanup.h>
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/of_graph.h>
+ #include <linux/regulator/consumer.h>
+@@ -83,6 +86,13 @@
+ #define HX8279_P3_REG_UNKNOWN_E5	0xe5
+ #define HX8279_P3_REG_UNKNOWN_E7	0xe7
+ 
++/* Page 4 - Backlight and CABC */
++#define HX8279_P4_REG_PWM_FREQ		0xb5
++#define HX8279_P4_REG_UNKNOWN_B6	0xb6
++#define HX8279_P4_REG_BRIGHTNESS	0xb8
++ #define HX8279_BL_DEF_BRIGHTNESS	128
++ #define HX8279_BL_MAX_BRIGHTNESS	255
++
+ /* Page 5 - MIPI */
+ #define HX8279_P5_REG_EOTP		0xb1
+ #define HX8279_P5_REG_TIMING		0xb3
+@@ -122,6 +132,9 @@ struct hx8279 {
+ 	struct gpio_desc *enable_gpio;
+ 	struct gpio_desc *reset_gpio;
+ 	const struct hx8279_panel_desc *desc;
++	/* Serializes page switches between modeset and backlight updates */
++	struct mutex page_lock;
++	bool prepared;
+ 	u8 last_page;
+ 	bool skip_voltage_config;
+ 	bool skip_goa_config;
+@@ -252,6 +265,15 @@ struct hx8279_panel_desc {
+ 	u8 timing_unk_bc;
+ 	u8 timing_unk_d6;
+ 
++	/*
++	 * Page 4 - Backlight over DSI.
++	 * When bl_duty_max is zero the panel is expected to declare an
++	 * external backlight in the device tree instead.
++	 */
++	u8 bl_duty_max;
++	u8 bl_pwm_freq;
++	u8 bl_unk_b6;
++
+ 	/* Page 6 */
+ 	u8 gamma_ctl;
+ 	u8 volt_adj;
+@@ -597,6 +619,92 @@ static void hx8279_set_mipi_cfg(struct hx8279 *hx,
+ 	}
+ }
+ 
++static void hx8279_set_backlight_cfg(struct hx8279 *hx,
++				     struct mipi_dsi_multi_context *dsi_ctx)
++{
++	const struct hx8279_panel_desc *desc = hx->desc;
++	u8 cmd_set_bl[2];
++
++	if (!desc->bl_duty_max)
++		return;
++
++	hx8279_set_page(hx, dsi_ctx, 4);
++
++	if (desc->bl_pwm_freq) {
++		cmd_set_bl[0] = HX8279_P4_REG_PWM_FREQ;
++		cmd_set_bl[1] = desc->bl_pwm_freq;
++		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_bl,
++					     ARRAY_SIZE(cmd_set_bl));
++	}
++
++	if (desc->bl_unk_b6) {
++		cmd_set_bl[0] = HX8279_P4_REG_UNKNOWN_B6;
++		cmd_set_bl[1] = desc->bl_unk_b6;
++		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_bl,
++					     ARRAY_SIZE(cmd_set_bl));
++	}
++}
++
++static int hx8279_bl_update_status(struct backlight_device *bl)
++{
++	struct hx8279 *hx = bl_get_data(bl);
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = hx->dsi[0] };
++	u16 brightness = backlight_get_brightness(bl);
++	u8 cmd_set_bl[2] = { HX8279_P4_REG_BRIGHTNESS, 0 };
++
++	/*
++	 * The DriverIC duty is linear in the requested brightness, capped
++	 * at the value the panel vendor allows for sustained use. Never
++	 * fall back to a zero duty for a non-zero brightness request.
++	 */
++	if (brightness)
++		cmd_set_bl[1] = max(1U, brightness * hx->desc->bl_duty_max / 255U);
++
++	guard(mutex)(&hx->page_lock);
++
++	if (!hx->prepared)
++		return 0;
++
++	hx8279_set_page(hx, &dsi_ctx, 4);
++	mipi_dsi_generic_write_multi(&dsi_ctx, cmd_set_bl, ARRAY_SIZE(cmd_set_bl));
++
++	return dsi_ctx.accum_err;
++}
++
++static const struct backlight_ops hx8279_bl_ops = {
++	.update_status = hx8279_bl_update_status,
++};
++
++static int hx8279_init_backlight(struct hx8279 *hx, struct device *dev)
++{
++	const struct backlight_properties props = {
++		.type = BACKLIGHT_RAW,
++		.scale = BACKLIGHT_SCALE_LINEAR,
++		.brightness = HX8279_BL_DEF_BRIGHTNESS,
++		.max_brightness = HX8279_BL_MAX_BRIGHTNESS,
++	};
++	struct backlight_device *bl;
++	int ret;
++
++	/* An external backlight declared in DT always wins */
++	ret = drm_panel_of_backlight(&hx->panel);
++	if (ret)
++		return ret;
++
++	if (hx->panel.backlight || !hx->desc->bl_duty_max)
++		return 0;
++
++	bl = devm_backlight_device_register(dev, dev_name(dev), dev, hx,
++					    &hx8279_bl_ops, &props);
++	if (IS_ERR(bl))
++		return dev_err_probe(dev, PTR_ERR(bl),
++				     "Failed to register DSI backlight\n");
++
++	hx->panel.backlight = bl;
++
++	return 0;
++}
++
+ static void hx8279_set_adv_cfg(struct hx8279 *hx,
+ 			       struct mipi_dsi_multi_context *dsi_ctx)
+ {
+@@ -707,6 +815,9 @@ static int hx8279_on(struct hx8279 *hx)
+ 	/* Page 0 - Driver/Module Configuration */
+ 	hx8279_set_module_config(hx, &dsi_ctx);
+ 
++	/* Page 4 */
++	hx8279_set_backlight_cfg(hx, &dsi_ctx);
++
+ 	/* Page 6 */
+ 	hx8279_set_adv_cfg(hx, &dsi_ctx);
+ 
+@@ -769,7 +880,12 @@ static int hx8279_prepare(struct drm_panel *panel)
+ 	if (hx->dsi[1])
+ 		hx->dsi[1]->mode_flags |= MIPI_DSI_MODE_LPM;
+ 
++	mutex_lock(&hx->page_lock);
+ 	ret = hx8279_on(hx);
++	if (!ret)
++		hx->prepared = true;
++	mutex_unlock(&hx->page_lock);
++
+ 	if (ret) {
+ 		hx8279_power_off(hx);
+ 		return ret;
+@@ -787,6 +903,10 @@ static int hx8279_unprepare(struct drm_panel *panel)
+ 	struct mipi_dsi_device *dsi = hx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+ 
++	mutex_lock(&hx->page_lock);
++	hx->prepared = false;
++	mutex_unlock(&hx->page_lock);
++
+ 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+ 	mipi_dsi_msleep(&dsi_ctx, 130);
+ 
+@@ -1094,6 +1214,10 @@ static int hx8279_probe(struct mipi_dsi_device *dsi)
+ 	if (IS_ERR(hx))
+ 		return PTR_ERR(hx);
+ 
++	ret = devm_mutex_init(dev, &hx->page_lock);
++	if (ret)
++		return ret;
++
+ 	ret = hx8279_init_vregs(hx, dev);
+ 	if (ret)
+ 		return ret;
+@@ -1149,9 +1273,9 @@ static int hx8279_probe(struct mipi_dsi_device *dsi)
+ 	hx->dsi[0] = dsi;
+ 	mipi_dsi_set_drvdata(dsi, hx);
+ 
+-	ret = drm_panel_of_backlight(&hx->panel);
++	ret = hx8279_init_backlight(hx, dev);
+ 	if (ret)
+-		return dev_err_probe(dev, ret, "Failed to get backlight\n");
++		return ret;
+ 
+ 	drm_panel_add(&hx->panel);
+ 
+-- 
+2.47.3
+

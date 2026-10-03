@@ -1,0 +1,740 @@
+From 0ccc6a75400c9decd52b05f1c7c3a4c9d6b10d40 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 18:47:03 +0200
+Subject: [PATCH 30/30] android, ipa: simple: light full resolution stills with
+ the flash strobe
+
+The flash lit stills with the torch (150 mA on the SM5703), from the AE
+precapture to the capture. A still in the separate full resolution
+configuration is now lit by the strobe (1200 mA), fired as the sensor
+starts, with the exposure scaled by pre-flash metering:
+
+- The soft IPA publishes, per frame, the light relative to what the AGC
+  settles on as Lux: the mean of the linear histogram above the black
+  level, over the mean the AGC last settled on, per unit of exposure time
+  and gain. Unlike the exposure alone it still measures with the
+  exposure at its limit, as in the dim scenes where a flash is used.
+- The HAL keeps the light without the torch and with it at the end of
+  the precapture. The strobe adds flash_gain (camera_hal.yaml, how much
+  more light it gives than the torch) times what the torch added; the
+  still starts with the exposure that gives the settled brightness.
+- IPASoftInterface::start() takes the controls Camera::start() is given
+  and returns sensor controls: an ExposureValue scales the exposure the
+  configuration starts with, written to the sensor before streaming. The
+  simple pipeline starts the software ISP before streamon for that. The
+  generated proxy is regenerated from soft.mojom; the template's thread
+  proxy passes the inputs of start() only, fixed by hand.
+- That configuration does not update the exposure remembered for the
+  sensor mode, and the AGC takes it as its last request.
+- The strobe stops once the still is in; without a strobe (no
+  flash_gain, or failing) the torch lights it as before.
+- The JPEG's EXIF says whether the flash fired and in which mode.
+
+---
+ .../internal/software_isp/software_isp.h      |  2 +-
+ include/libcamera/ipa/soft.mojom              |  8 +-
+ include/libcamera/ipa/soft_ipa_interface.h    |  4 +-
+ include/libcamera/ipa/soft_ipa_proxy.h        | 18 ++--
+ src/android/camera_device.cpp                 | 89 ++++++++++++++++++-
+ src/android/camera_device.h                   | 19 +++-
+ src/android/camera_hal_config.cpp             |  1 +
+ src/android/camera_hal_config.h               |  5 ++
+ src/android/jpeg/post_processor_jpeg.cpp      | 15 +++-
+ src/ipa/simple/algorithms/agc.cpp             | 40 ++++++++-
+ src/ipa/simple/algorithms/agc.h               |  4 +
+ src/ipa/simple/ipa_context.h                  | 11 +++
+ src/ipa/simple/soft_simple.cpp                | 51 +++++++++--
+ src/libcamera/pipeline/simple/simple.cpp      | 33 ++++---
+ src/libcamera/proxy/soft_ipa_proxy.cpp        | 32 +++++--
+ src/libcamera/software_isp/software_isp.cpp   |  6 +-
+ 16 files changed, 299 insertions(+), 39 deletions(-)
+
+diff --git a/include/libcamera/internal/software_isp/software_isp.h b/include/libcamera/internal/software_isp/software_isp.h
+index e201c5c9..378ea885 100644
+--- a/include/libcamera/internal/software_isp/software_isp.h
++++ b/include/libcamera/internal/software_isp/software_isp.h
+@@ -74,7 +74,7 @@ public:
+ 	void processStats(const uint32_t frame, const uint32_t bufferId,
+ 			  const ControlList &sensorControls);
+ 
+-	int start();
++	int start(const ControlList &controls, ControlList *sensorControls);
+ 	void stop();
+ 	void closeLens();
+ 
+diff --git a/include/libcamera/ipa/soft.mojom b/include/libcamera/ipa/soft.mojom
+index eb2c118f..1a82b05a 100644
+--- a/include/libcamera/ipa/soft.mojom
++++ b/include/libcamera/ipa/soft.mojom
+@@ -27,7 +27,13 @@ interface IPASoftInterface {
+ 	     libcamera.ControlInfoMap sensorControls,
+ 	     libcamera.ControlInfoMap lensControls)
+ 		=> (int32 ret, libcamera.ControlInfoMap ipaControls, bool ccmEnabled);
+-	start() => (int32 ret);
++	/*
++	 * controls: the controls to start with. An ExposureValue scales the
++	 * exposure the configuration starts with (a still lit by the flash);
++	 * sensorControls are written to the sensor before streaming.
++	 */
++	start(libcamera.ControlList controls)
++		=> (int32 ret, libcamera.ControlList sensorControls);
+ 	stop();
+ 	configure(IPAConfigInfo configInfo)
+ 		=> (int32 ret, libcamera.ControlList sensorControls);
+diff --git a/include/libcamera/ipa/soft_ipa_interface.h b/include/libcamera/ipa/soft_ipa_interface.h
+index d67d1f1c..babd0465 100644
+--- a/include/libcamera/ipa/soft_ipa_interface.h
++++ b/include/libcamera/ipa/soft_ipa_interface.h
+@@ -86,7 +86,9 @@ public:
+ 		ControlInfoMap *ipaControls,
+ 		bool *ccmEnabled) = 0;
+ 
+-	virtual int32_t start() = 0;
++	virtual int32_t start(
++		const ControlList &controls,
++		ControlList *sensorControls) = 0;
+ 
+ 	virtual void stop() = 0;
+ 
+diff --git a/include/libcamera/ipa/soft_ipa_proxy.h b/include/libcamera/ipa/soft_ipa_proxy.h
+index 37206a84..33dc095a 100644
+--- a/include/libcamera/ipa/soft_ipa_proxy.h
++++ b/include/libcamera/ipa/soft_ipa_proxy.h
+@@ -45,7 +45,9 @@ public:
+         	ControlInfoMap *ipaControls,
+         	bool *ccmEnabled) override;
+ 
+-        int32_t start() override;
++        int32_t start(
++        	const ControlList &controls,
++        	ControlList *sensorControls) override;
+ 
+         void stop() override;
+ 
+@@ -89,8 +91,12 @@ private:
+         	ControlInfoMap *ipaControls,
+         	bool *ccmEnabled);
+ 
+-        int32_t startThread();
+-        int32_t startIPC();
++        int32_t startThread(
++        	const ControlList &controls,
++        	ControlList *sensorControls);
++        int32_t startIPC(
++        	const ControlList &controls,
++        	ControlList *sensorControls);
+ 
+         void stopThread();
+         void stopIPC();
+@@ -172,9 +178,11 @@ private:
+ 			ipa_->stop();
+ 		}
+ 
+-		int32_t start()
++		int32_t start(
++                	const ControlList &controls,
++                	ControlList *sensorControls)
+ 		{
+-			return ipa_->start();
++			return ipa_->start(controls, sensorControls);
+ 		}
+ 		void queueRequest(
+                 	const uint32_t frame,
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index 5d3f912d..418862dd 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -10,6 +10,7 @@
+ #include <libcamera/orientation.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <chrono>
+ #include <fstream>
+ #include <set>
+@@ -391,6 +392,21 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
+ 			flash_.levels = levels;
+ 			LOG(HAL, Info) << "Flash LED " << cameraConfigData->flash
+ 				       << ", " << levels << " torch levels";
++
++			/* The strobe at full current, stopped once the still is in. */
++			std::ifstream maxUa(led + "/max_flash_brightness");
++			std::ifstream maxUs(led + "/max_flash_timeout");
++			int ua = 0, us = 0;
++			maxUa >> ua;
++			maxUs >> us;
++			if (cameraConfigData->flashGain > 1 && ua > 0 && us > 0) {
++				std::ofstream(led + "/flash_brightness") << ua << std::endl;
++				std::ofstream(led + "/flash_timeout") << us << std::endl;
++				flash_.strobe = led + "/flash_strobe";
++				flash_.gain = cameraConfigData->flashGain;
++				LOG(HAL, Info) << "Flash strobe " << ua << " uA, "
++					       << flash_.gain << " times the torch";
++			}
+ 		} else {
+ 			LOG(HAL, Error) << "Flash LED " << led << " not found";
+ 		}
+@@ -419,6 +435,40 @@ bool CameraDevice::setLed(bool on)
+ 	return true;
+ }
+ 
++bool CameraDevice::setStrobe(bool on)
++{
++	std::ofstream strobe(flash_.strobe);
++	strobe << (on ? 1 : 0) << std::endl;
++	if (!strobe) {
++		LOG(HAL, Error) << "Failed to " << (on ? "fire" : "stop")
++				<< " the flash strobe";
++		return false;
++	}
++
++	/* Strobe on or off, the torch is off. */
++	flash_.ledOn = on;
++	return true;
++}
++
++/*
++ * The exposure value for a still lit by the strobe, from the precapture:
++ * the torch added lit - ambient of light, the strobe adds gain times as
++ * much. The light is relative to the brightness the AGC settles on, so the
++ * exposure that gives that brightness is its inverse; the still starts
++ * from the exposure of the last frame with the torch.
++ */
++float CameraDevice::flashExposureValue()
++{
++	if (flash_.ambient <= 0 || flash_.lit <= 0 || flash_.litExposure <= 0)
++		return 0;
++
++	double torch = std::max(flash_.lit - flash_.ambient, 0.0);
++	double strobe = flash_.ambient + flash_.gain * torch;
++	double scale = 1 / (strobe * flash_.litExposure);
++
++	return std::clamp(static_cast<float>(std::log2(scale)), -6.0f, 2.0f);
++}
++
+ /* The torch outside a camera session (Android's flashlight). */
+ int CameraDevice::setTorchMode(bool enable)
+ {
+@@ -463,6 +513,8 @@ void CameraDevice::updateFlash(Camera3RequestDescriptor *descriptor)
+ 					flash_.assistSince = std::chrono::steady_clock::now();
+ 					/* Frames for the AE to settle on the LED. */
+ 					flash_.precaptureFrames = 8;
++					flash_.lit = 0;
++					flash_.litExposure = 0;
+ 				}
+ 				break;
+ 			case ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER_CANCEL:
+@@ -575,6 +627,18 @@ void CameraDevice::flashFrameDone(Camera3RequestDescriptor *descriptor)
+ 	if (gain && !flash_.ledOn)
+ 		flash_.dark = *gain >= 4.0f;
+ 
++	/* The light metered before and during the precapture. */
++	const auto &time = descriptor->request_->metadata().get(controls::ExposureTime);
++	const auto &lux = descriptor->request_->metadata().get(controls::Lux);
++	if (gain && time && lux && *lux > 0 && !descriptor->still_) {
++		if (!flash_.ledOn) {
++			flash_.ambient = *lux;
++		} else if (flash_.assist && !flash_.precaptureFrames) {
++			flash_.lit = *lux;
++			flash_.litExposure = *time * *gain;
++		}
++	}
++
+ 	descriptor->aeState_ = ANDROID_CONTROL_AE_STATE_CONVERGED;
+ 	if (flash_.precaptureFrames) {
+ 		flash_.precaptureFrames--;
+@@ -1648,9 +1712,25 @@ int CameraDevice::processStill(std::unique_ptr<Camera3RequestDescriptor> descrip
+ 		camera_->stop();
+ 	}
+ 
++	/* Lit by the strobe, fired as the sensor starts. */
++	bool strobe = false;
++	ControlList startControls(controls::controls);
+ 	int ret = camera_->configure(stillConfig_.get());
+-	if (!ret)
+-		ret = camera_->start();
++	if (!ret) {
++		if (still->flashCapture_ && hasFlash()) {
++			MutexLocker lock(flash_.lock);
++			/* Without the strobe, the torch lights it as metered. */
++			if (!flash_.strobe.empty() && setStrobe(true)) {
++				float ev = flashExposureValue();
++				startControls.set(controls::ExposureValue, ev);
++				strobe = true;
++				LOG(HAL, Info) << "Still lit by the strobe, exposure value "
++					       << ev << " (ambient " << flash_.ambient
++					       << ", torch " << flash_.lit << ")";
++			}
++		}
++		ret = camera_->start(&startControls);
++	}
+ 	if (ret) {
+ 		LOG(HAL, Error) << "Still capture configuration failed: " << ret;
+ 		abortRequest(still);
+@@ -1694,6 +1774,11 @@ int CameraDevice::processStill(std::unique_ptr<Camera3RequestDescriptor> descrip
+ 			       << " ms" << (done ? "" : " (timed out)");
+ 	}
+ 
++	if (strobe) {
++		MutexLocker lock(flash_.lock);
++		setStrobe(false);
++	}
++
+ 	ret = camera_->configure(config_.get());
+ 	if (ret) {
+ 		LOG(HAL, Error) << "Failed to restore the preview configuration";
+diff --git a/src/android/camera_device.h b/src/android/camera_device.h
+index 57f07ccd..1f556850 100644
+--- a/src/android/camera_device.h
++++ b/src/android/camera_device.h
+@@ -152,13 +152,17 @@ private:
+ 	CameraMetadata lastSettings_;
+ 
+ 	/*
+-	 * The flash LED, driven from sysfs. With a software ISP there is no
+-	 * strobe synchronised with the exposure: the LED stays on from the
+-	 * AE precapture to the end of the still capture, and AE adapts to it.
++	 * The flash LED, driven from sysfs. The torch lights the scene from
++	 * the AE precapture on, and AE adapts to it. A still in the separate
++	 * configuration is lit by the strobe instead, started with the
++	 * sensor: the exposure is scaled from the precapture's by how much
++	 * more light it gives (pre-flash metering).
+ 	 */
+ 	void updateFlash(Camera3RequestDescriptor *descriptor);
+ 	void flashFrameDone(Camera3RequestDescriptor *descriptor);
+ 	bool setLed(bool on);
++	bool setStrobe(bool on);
++	float flashExposureValue();
+ 
+ 	/*
+ 	 * Autofocus: Android's AF state machine over the IPA's AfState. A
+@@ -180,6 +184,15 @@ private:
+ 	struct {
+ 		std::string brightness;
+ 		int levels = 0;
++		std::string strobe; /* empty: no strobe, the torch lights stills */
++		double gain = 0;
++		/*
++		 * The light (the IPA's Lux, per unit of exposure) without and
++		 * with the torch, and the exposure (us times gain) with it.
++		 */
++		double ambient = 0;
++		double lit = 0;
++		double litExposure = 0;
+ 		libcamera::Mutex lock;
+ 		bool torch = false; /* FLASH_MODE_TORCH, or set_torch_mode */
+ 		bool assist = false; /* from the precapture to the capture */
+diff --git a/src/android/camera_hal_config.cpp b/src/android/camera_hal_config.cpp
+index 652c0c92..526b4eba 100644
+--- a/src/android/camera_hal_config.cpp
++++ b/src/android/camera_hal_config.cpp
+@@ -109,6 +109,7 @@ int CameraHalConfig::Private::parseCameraConfigData(const std::string &cameraId,
+ 	/* Optional property "flash": the LED class device of the flash. */
+ 	if (cameraObject.contains("flash"))
+ 		cameraConfigData.flash = cameraObject["flash"].get<std::string>("");
++	cameraConfigData.flashGain = cameraObject["flash_gain"].get<double>(0);
+ 
+ 	/* Optional property "max_stream_size": [width, height]. */
+ 	if (cameraObject.contains("max_stream_size")) {
+diff --git a/src/android/camera_hal_config.h b/src/android/camera_hal_config.h
+index f8bf4ac1..edef8648 100644
+--- a/src/android/camera_hal_config.h
++++ b/src/android/camera_hal_config.h
+@@ -19,6 +19,11 @@ struct CameraConfigData {
+ 	int rotation = -1;
+ 	/* Name of the flash LED under /sys/class/leds, if the camera has one */
+ 	std::string flash;
++	/*
++	 * How much more light the flash strobe gives than the torch, 0 for no
++	 * strobe: the stills are then lit by the torch.
++	 */
++	double flashGain = 0;
+ 	/*
+ 	 * Largest YUV/PRIV stream, if smaller than the sensor: larger sizes are
+ 	 * offered as JPEG only, captured in a separate full resolution mode.
+diff --git a/src/android/jpeg/post_processor_jpeg.cpp b/src/android/jpeg/post_processor_jpeg.cpp
+index 8890157a..e857c6c2 100644
+--- a/src/android/jpeg/post_processor_jpeg.cpp
++++ b/src/android/jpeg/post_processor_jpeg.cpp
+@@ -211,7 +211,20 @@ void PostProcessorJpeg::process(Camera3RequestDescriptor::StreamBuffer *streamBu
+ 	ret = resultMetadata->getEntry(ANDROID_SENSOR_SENSITIVITY, &entry);
+ 	exif.setISO(ret ? *entry.data.i32 : 100);
+ 
+-	exif.setFlash(Exif::Flash::FlashNotPresent);
++	/* Whether the flash fired, and in which mode, from the capture result. */
++	int flash = Exif::Flash::FlashNotPresent;
++	ret = resultMetadata->getEntry(ANDROID_FLASH_STATE, &entry);
++	if (ret && *entry.data.u8 != ANDROID_FLASH_STATE_UNAVAILABLE) {
++		flash = *entry.data.u8 == ANDROID_FLASH_STATE_FIRED ? Exif::Flash::Fired : 0;
++		ret = resultMetadata->getEntry(ANDROID_CONTROL_AE_MODE, &entry);
++		if (ret && *entry.data.u8 == ANDROID_CONTROL_AE_MODE_ON_ALWAYS_FLASH)
++			flash |= Exif::Flash::ModeCompulsoryFiring;
++		else if (ret && *entry.data.u8 == ANDROID_CONTROL_AE_MODE_ON_AUTO_FLASH)
++			flash |= Exif::Flash::ModeAuto;
++		else
++			flash |= Exif::Flash::ModeCompulsorySuppression;
++	}
++	exif.setFlash(static_cast<Exif::Flash>(flash));
+ 	exif.setWhiteBalance(Exif::WhiteBalance::Auto);
+ 
+ 	exif.setFocalLength(1.0);
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index 306f3fe2..8f5e21a4 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -63,6 +63,9 @@ static constexpr unsigned int kMaxWait = 8;
+  */
+ static constexpr unsigned int kFlickerPeriodDefault = 10000;
+ 
++/* The linear mean the AGC settles on, until it has settled once. */
++static constexpr double kYGoalDefault = 0.25;
++
+ Agc::Agc()
+ 	: pending_(false), exposureReq_(0), gainReq_(0), waited_(0),
+ 	  target_(kExposureOptimal), msvMin_(kExposureMSVMinDefault),
+@@ -168,6 +171,16 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
+ 
++	/* Started with a scaled exposure: that is the request to wait for. */
++	auto &state = context.activeState.agc;
++	if (state.scaledPending) {
++		state.scaledPending = false;
++		exposureReq_ = state.startExposure;
++		gainReq_ = state.startGain;
++		pending_ = true;
++		waited_ = 0;
++	}
++
+ 	/*
+ 	 * A change reaches the sensor output some frames later (the exposure
+ 	 * delay is 2 on both sensors, measured). Deciding again on frames
+@@ -176,6 +189,7 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	 * pumps around the target. Keep asking for the last values until the
+ 	 * frame controls show them.
+ 	 */
++	satisfied_ = false;
+ 	if (pending_) {
+ 		bool arrived = exposure == exposureReq_ &&
+ 			       std::abs(again - gainReq_) <= 0.03 * gainReq_;
+@@ -197,7 +211,8 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 		    (saturated > saturatedMax_ && exposureMSV > msvMin_);
+ 	bool under = exposureMSV < target_ - kExposureSatisfactory &&
+ 		     saturated < saturatedMin_;
+-	if (!over && !under)
++	satisfied_ = !over && !under;
++	if (satisfied_)
+ 		return;
+ 
+ 	/*
+@@ -282,6 +297,29 @@ void Agc::process(IPAContext &context,
+ 	double saturated = total ? static_cast<double>(histogram[SwIspStats::kYHistogramSize - 1]) / total : 0;
+ 
+ 	updateExposure(context, frameContext, exposureMSV, saturated);
++
++	/*
++	 * The light, relative to what the AGC settles on: the mean of the
++	 * histogram above the black level (linear, the statistics are taken
++	 * before the gamma) over the goal, per unit of exposure time (us)
++	 * and gain. Unlike the exposure alone it still measures when the
++	 * exposure is at its limit: the flash metering compares frames
++	 * without and with the torch on it.
++	 */
++	double sum = 0;
++	unsigned int count = 0;
++	for (unsigned int i = blackLevelHistIdx; i < SwIspStats::kYHistogramSize; i++) {
++		sum += (i - blackLevelHistIdx + 0.5) * histogram[i];
++		count += histogram[i];
++	}
++	double meanY = count ? sum / count : 0;
++	if (satisfied_ && meanY > 0)
++		yGoal_ = yGoal_ ? 0.9 * yGoal_ + 0.1 * meanY : meanY;
++
++	double goal = yGoal_ ? yGoal_ : histogramSize * kYGoalDefault;
++	double product = exposureTime.get<std::micro>() * frameContext.sensor.gain;
++	if (product > 0)
++		metadata.set(controls::Lux, static_cast<float>(meanY / goal / product));
+ }
+ 
+ REGISTER_IPA_ALGORITHM(Agc, "Agc")
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index ceb5e44c..0515bae3 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -45,6 +45,10 @@ private:
+ 	double saturatedMin_;
+ 	/* How much brighter a pixel binned by two is, from the tuning file */
+ 	double binningGain_ = 1.0;
++	/* The AGC was satisfied with the last frame */
++	bool satisfied_ = false;
++	/* Mean of the linear histogram the AGC settles on, in bins */
++	double yGoal_ = 0;
+ 	/* Mains flicker period to keep the exposure a multiple of, 0 = off */
+ 	utils::Duration flickerPeriod_;
+ };
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index de3e3fe3..ceff871b 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -62,6 +62,17 @@ struct IPAActiveState {
+ 		int32_t initialExposure;
+ 		double initialGain;
+ 		bool initial;
++		/* What the configuration started with, and whether it is known */
++		int32_t startExposure;
++		double startGain;
++		bool startValid;
++		/*
++		 * The configuration started with a scaled exposure (a still lit
++		 * by the flash): not what the mode needs in the ambient light,
++		 * so not remembered, and the AGC takes it as its last request.
++		 */
++		bool scaled;
++		bool scaledPending;
+ 	} agc;
+ 
+ 	struct {
+diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
+index a820a4d6..6a67d79f 100644
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -5,7 +5,9 @@
+  * Simple Software Image Processing Algorithm module
+  */
+ 
++#include <algorithm>
+ #include <chrono>
++#include <cmath>
+ #include <stdint.h>
+ #include <sys/mman.h>
+ 
+@@ -61,7 +63,7 @@ public:
+ 	int configure(const IPAConfigInfo &configInfo,
+ 		      ControlList *sensorControls) override;
+ 
+-	int start() override;
++	int start(const ControlList &controls, ControlList *sensorControls) override;
+ 	void stop() override;
+ 
+ 	void queueRequest(const uint32_t frame, const ControlList &controls) override;
+@@ -303,8 +305,13 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo,
+ 
+ 	/* Written before the stream starts: the first frame is already right. */
+ 	auto &agc = context_.activeState.agc;
++	agc.scaled = false;
++	agc.scaledPending = false;
++	agc.startValid = agc.initial;
+ 	if (agc.initial) {
+ 		agc.initial = false;
++		agc.startExposure = agc.initialExposure;
++		agc.startGain = agc.initialGain;
+ 		ControlList ctrls(sensorInfoMap_);
+ 		ctrls.set(V4L2_CID_EXPOSURE, agc.initialExposure);
+ 		ctrls.set(V4L2_CID_ANALOGUE_GAIN,
+@@ -326,8 +333,38 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo,
+ 	return 0;
+ }
+ 
+-int IPASoftSimple::start()
++int IPASoftSimple::start(const ControlList &controls, ControlList *sensorControls)
+ {
++	/*
++	 * A still lit by the flash: the exposure the configuration starts
++	 * with, scaled. Exposure time first, as the AGC would.
++	 */
++	const auto ev = controls.get(controls::ExposureValue);
++	auto &agc = context_.activeState.agc;
++	if (!ev || *ev == 0.0f || !agc.startValid)
++		return 0;
++
++	const auto &cfg = context_.configuration.agc;
++	double total = agc.startExposure * agc.startGain * std::exp2(*ev);
++	int32_t exposure = std::clamp(static_cast<int32_t>(std::lround(total / agc.startGain)),
++				      cfg.exposureMin, cfg.exposureMax);
++	double gain = std::clamp(total / exposure, cfg.againMin, cfg.againMax);
++
++	ControlList ctrls(sensorInfoMap_);
++	ctrls.set(V4L2_CID_EXPOSURE, exposure);
++	ctrls.set(V4L2_CID_ANALOGUE_GAIN,
++		  static_cast<int32_t>(camHelper_ ? camHelper_->gainCode(gain) : gain));
++	*sensorControls = std::move(ctrls);
++
++	agc.startExposure = exposure;
++	agc.startGain = gain;
++	agc.scaled = true;
++	agc.scaledPending = true;
++
++	LOG(IPASoft, Info)
++		<< "Starting with exposure value " << *ev << ": exposure "
++		<< exposure << ", gain " << gain;
++
+ 	return 0;
+ }
+ 
+@@ -363,10 +400,12 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 	int32_t again = sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
+ 	frameContext.sensor.gain = camHelper_ ? camHelper_->gain(again) : again;
+ 
+-	auto &last = context_.activeState.agc.byBin[context_.activeState.agc.bin - 1];
+-	last.time = frameContext.sensor.exposure * context_.configuration.agc.lineDuration;
+-	last.gain = frameContext.sensor.gain;
+-	last.valid = true;
++	if (!context_.activeState.agc.scaled) {
++		auto &last = context_.activeState.agc.byBin[context_.activeState.agc.bin - 1];
++		last.time = frameContext.sensor.exposure * context_.configuration.agc.lineDuration;
++		last.gain = frameContext.sensor.gain;
++		last.valid = true;
++	}
+ 
+ 	ControlList metadata(controls::controls);
+ 	for (auto const &algo : algorithms())
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 3001aec0..a0335c43 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -1484,7 +1484,7 @@ int SimplePipelineHandler::exportFrameBuffers(Camera *camera, Stream *stream,
+ 		return data->video_->exportBuffers(count, buffers);
+ }
+ 
+-int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
++int SimplePipelineHandler::start(Camera *camera, const ControlList *controls)
+ {
+ 	SimpleCameraData *data = cameraData(camera);
+ 	V4L2VideoDevice *video = data->video_;
+@@ -1518,6 +1518,23 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
+ 
+ 	video->bufferReady.connect(data, &SimpleCameraData::imageBufferReady);
+ 
++	/*
++	 * The software ISP first: the sensor controls it starts with (an
++	 * exposure scaled for the flash) apply from the first frame,
++	 * and the delayed controls start from them.
++	 */
++	if (data->useConversion_ && data->swIsp_) {
++		ControlList sensorControls;
++		ret = data->swIsp_->start(controls ? *controls : ControlList(),
++					  &sensorControls);
++		if (ret < 0) {
++			stop(camera);
++			return ret;
++		}
++		if (!sensorControls.empty())
++			data->sensor_->setControls(&sensorControls);
++	}
++
+ 	data->delayedCtrls_->reset();
+ 	if (frameStartEmitter) {
+ 		ret = frameStartEmitter->setFrameStartEnabled(true);
+@@ -1536,16 +1553,12 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
+ 	}
+ 
+ 	if (data->useConversion_) {
+-		if (data->converter_)
++		if (data->converter_) {
+ 			ret = data->converter_->start();
+-		else if (data->swIsp_)
+-			ret = data->swIsp_->start();
+-		else
+-			ret = 0;
+-
+-		if (ret < 0) {
+-			stop(camera);
+-			return ret;
++			if (ret < 0) {
++				stop(camera);
++				return ret;
++			}
+ 		}
+ 
+ 		/* Queue all internal buffers for capture. */
+diff --git a/src/libcamera/proxy/soft_ipa_proxy.cpp b/src/libcamera/proxy/soft_ipa_proxy.cpp
+index a81cb6ec..d02454fa 100644
+--- a/src/libcamera/proxy/soft_ipa_proxy.cpp
++++ b/src/libcamera/proxy/soft_ipa_proxy.cpp
+@@ -258,29 +258,40 @@ int32_t IPAProxySoft::initIPC(
+ }
+ 
+ 
+-int32_t IPAProxySoft::start()
++int32_t IPAProxySoft::start(
++	const ControlList &controls,
++	ControlList *sensorControls)
+ {
+ 	if (isolate_)
+-		return startIPC();
++		return startIPC(controls, sensorControls);
+ 	else
+-		return startThread();
++		return startThread(controls, sensorControls);
+ }
+ 
+-int32_t IPAProxySoft::startThread()
++int32_t IPAProxySoft::startThread(
++	const ControlList &controls,
++	ControlList *sensorControls)
+ {
+ 	state_ = ProxyRunning;
+ 	thread_.start();
+ 
+-	return proxy_.invokeMethod(&ThreadProxy::start, ConnectionTypeBlocking);
++	return proxy_.invokeMethod(&ThreadProxy::start, ConnectionTypeBlocking, controls, sensorControls);
+ }
+ 
+-int32_t IPAProxySoft::startIPC()
++int32_t IPAProxySoft::startIPC(
++	const ControlList &controls,
++	ControlList *sensorControls)
+ {
+ 	IPCMessage::Header _header = { static_cast<uint32_t>(_SoftCmd::Start), seq_++ };
+ 	IPCMessage _ipcInputBuf(_header);
+ 	IPCMessage _ipcOutputBuf;
+ 
+ 
++	std::vector<uint8_t> controlsBuf;
++	std::tie(controlsBuf, std::ignore) =
++		IPADataSerializer<ControlList>::serialize(controls
++, &controlSerializer_);
++	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), controlsBuf.begin(), controlsBuf.end());
+ 
+ 
+ 	int _ret = ipc_->sendSync(_ipcInputBuf, &_ipcOutputBuf);
+@@ -293,7 +304,16 @@ int32_t IPAProxySoft::startIPC()
+ 
+ 
+ 
++	const size_t sensorControlsStart = 4;
++
+ 
++	if (sensorControls) {
++                *sensorControls =
++                IPADataSerializer<ControlList>::deserialize(
++                	_ipcOutputBuf.data().cbegin() + sensorControlsStart,
++                	_ipcOutputBuf.data().cend(),
++                	&controlSerializer_);
++	}
+ 
+ 
+ 	return _retValue;
+diff --git a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+index 0dbfb1b8..1134eabd 100644
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -351,11 +351,13 @@ int SoftwareIsp::queueBuffers(uint32_t frame, FrameBuffer *input,
+ 
+ /**
+  * \brief Starts the Software ISP streaming operation
++ * \param[in] controls The controls to start with
++ * \param[out] sensorControls The sensor controls to write before streaming
+  * \return 0 on success, any other value indicates an error
+  */
+-int SoftwareIsp::start()
++int SoftwareIsp::start(const ControlList &controls, ControlList *sensorControls)
+ {
+-	int ret = ipa_->start();
++	int ret = ipa_->start(controls, sensorControls);
+ 	if (ret)
+ 		return ret;
+ 
+-- 
+2.47.3
+

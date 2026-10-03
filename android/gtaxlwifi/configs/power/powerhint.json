@@ -1,0 +1,135 @@
+{
+  "Nodes": [
+    {
+      "Name": "CPUCluster0MinFreq",
+      "Path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq",
+      "Values": [
+        "1586000",
+        "1144000",
+        "902200",
+        "342875"
+      ],
+      "DefaultIndex": 3,
+      "ResetOnInit": true
+    },
+    {
+      "Name": "CPUCluster1MinFreq",
+      "Path": "/sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq",
+      "Values": [
+        "1586000",
+        "1144000",
+        "902200",
+        "342875"
+      ],
+      "DefaultIndex": 3,
+      "ResetOnInit": true
+    },
+    {
+      "Name": "PowerHALMainState",
+      "Path": "vendor.powerhal.state",
+      "Values": [
+        "SUSTAINED_PERFORMANCE",
+        ""
+      ],
+      "Type": "Property"
+    },
+    {
+      "Name": "PowerHALRenderingState",
+      "Path": "vendor.powerhal.rendering",
+      "Values": [
+        "EXPENSIVE_RENDERING",
+        ""
+      ],
+      "Type": "Property"
+    },
+    {
+      "Name": "PowerHALAudioState",
+      "Path": "vendor.powerhal.audio",
+      "Values": [
+        "AUDIO_STREAMING_LOW_LATENCY",
+        ""
+      ],
+      "Type": "Property"
+    }
+  ],
+  "Actions": [
+    {
+      "PowerHint": "INTERACTION",
+      "Node": "CPUCluster0MinFreq",
+      "Duration": 0,
+      "Value": "1586000"
+    },
+    {
+      "PowerHint": "INTERACTION",
+      "Node": "CPUCluster1MinFreq",
+      "Duration": 0,
+      "Value": "1586000"
+    },
+    {
+      "PowerHint": "DISPLAY_UPDATE_IMMINENT",
+      "Node": "CPUCluster0MinFreq",
+      "Duration": 100,
+      "Value": "902200"
+    },
+    {
+      "PowerHint": "DISPLAY_UPDATE_IMMINENT",
+      "Node": "CPUCluster1MinFreq",
+      "Duration": 100,
+      "Value": "902200"
+    },
+    {
+      "PowerHint": "LAUNCH",
+      "Node": "CPUCluster0MinFreq",
+      "Duration": 0,
+      "Value": "1586000"
+    },
+    {
+      "PowerHint": "LAUNCH",
+      "Node": "CPUCluster1MinFreq",
+      "Duration": 0,
+      "Value": "1586000"
+    },
+    {
+      "PowerHint": "SUSTAINED_PERFORMANCE",
+      "Node": "CPUCluster0MinFreq",
+      "Duration": 0,
+      "Value": "1144000"
+    },
+    {
+      "PowerHint": "SUSTAINED_PERFORMANCE",
+      "Node": "CPUCluster1MinFreq",
+      "Duration": 0,
+      "Value": "1144000"
+    },
+    {
+      "PowerHint": "SUSTAINED_PERFORMANCE",
+      "Node": "PowerHALMainState",
+      "Duration": 0,
+      "Value": "SUSTAINED_PERFORMANCE"
+    },
+    {
+      "PowerHint": "EXPENSIVE_RENDERING",
+      "Node": "CPUCluster0MinFreq",
+      "Duration": 0,
+      "Value": "1144000"
+    },
+    {
+      "PowerHint": "EXPENSIVE_RENDERING",
+      "Node": "CPUCluster1MinFreq",
+      "Duration": 0,
+      "Value": "1144000"
+    },
+    {
+      "PowerHint": "EXPENSIVE_RENDERING",
+      "Node": "PowerHALRenderingState",
+      "Duration": 0,
+      "Value": "EXPENSIVE_RENDERING"
+    },
+    {
+      "PowerHint": "AUDIO_STREAMING_LOW_LATENCY",
+      "Node": "PowerHALAudioState",
+      "Duration": 0,
+      "Value": "AUDIO_STREAMING_LOW_LATENCY"
+    }
+  ]
+}

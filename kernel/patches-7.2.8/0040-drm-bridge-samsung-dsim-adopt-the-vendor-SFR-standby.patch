@@ -1,0 +1,95 @@
+From 165cd87a2a4e6eb1176bfde29acce596b59f2697 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 16 Aug 2026 12:00:01 +0000
+Subject: [PATCH] drm/bridge: samsung-dsim: adopt the vendor SFR standby
+ discipline on exynos7870
+
+On this DSIM the SFR standby bit (SFR_CTRL bit 4) gates the whole
+transmit machinery, commands included. The vendor CAL never
+transmits anything with it clear and never reprograms the display
+registers with it set:
+
+  dsim_reg_start() raises it right after the link is up and before
+  the very first panel command; dsim_reg_set_partial_update() drops
+  it around any resolution/porch rewrite and raises it again.
+
+Mainline did neither: standby was only raised in atomic_enable(),
+after the panel prepare, so the init table was queued with the
+transmitter halted; and atomic_enable() then rewrote MDRESOL and
+the porches with standby high, which stalls the transmit FSM and
+parks the last queued header until video starts.
+
+Mirror both halves of the vendor discipline: programme the display
+mode and raise standby at the end of the init (a handed-over link
+goes through the same init, with scanout already stopped), and in
+atomic_enable() let any pending header drain, drop standby around
+the reprogramming, then raise it again.
+
+(Squash of the two original patches: raise-at-init and
+drop-around-reprogram are two halves of one model.)
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 41 +++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index ccc6319b2e..8304fe5ae4 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -1678,6 +1678,27 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 	samsung_dsim_set_phy_ctrl(dsi);
+ 	samsung_dsim_init_link(dsi);
+ 
++	/*
++	 * The vendor CAL raises the SFR standby bit (SFR_CTRL bit 4) in
++	 * dsim_reg_start(), right after the link is up and before the very
++	 * first panel command: on this DSIM the bit gates the transmit
++	 * machinery as a whole, commands included, not just the video path
++	 * (the MDRESOL bit 31 written by set_display_enable() is reserved
++	 * here). Mainline only raises it in atomic_enable(), which runs
++	 * after the panel prepare, so the panel init table would be queued
++	 * with the transmitter halted. Mirror the vendor order: programme
++	 * the display mode first (the vendor CAL writes resolution and
++	 * porches in dsim_reg_init(), before standby) and raise standby.
++	 * A link handed over by the bootloader goes through here as well:
++	 * scanout is already stopped at that point, so the full init is
++	 * safe and lands the machine in the state this sequence has been
++	 * proven to transmit from.
++	 */
++	if (dsi->plat_data->hw_type == DSIM_TYPE_EXYNOS7870) {
++		samsung_dsim_set_display_mode(dsi);
++		samsung_dsim_set_display_enable(dsi, true);
++	}
++
+ 	dsi->state |= DSIM_STATE_INITIALIZED;
+ 
+ 	return 0;
+@@ -1716,6 +1737,26 @@ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
+ {
+ 	struct samsung_dsim *dsi = bridge_to_dsi(bridge);
+ 
++	/*
++	 * The cold init on exynos7870 has already programmed the display
++	 * mode and raised the SFR standby so that the panel init table
++	 * could be transmitted (see samsung_dsim_init()). Rewriting
++	 * MDRESOL and the porches with standby high stalls the transmit
++	 * FSM: the last queued command header then sits untransmitted in
++	 * the FIFO until video actually starts, and every later command
++	 * times out against it. The vendor CAL never reprograms these
++	 * registers with standby high - dsim_reg_set_partial_update()
++	 * drops it first and raises it again after. Let the pending
++	 * header drain, then do the same.
++	 */
++	if (dsi->plat_data->hw_type == DSIM_TYPE_EXYNOS7870) {
++		if (dsi->driver_data->wait_for_hdr_fifo &&
++		    samsung_dsim_wait_for_hdr_fifo(dsi))
++			dev_warn(dsi->dev,
++				 "header FIFO not empty before reprogramming\n");
++		samsung_dsim_set_display_enable(dsi, false);
++	}
++
+ 	samsung_dsim_set_display_mode(dsi);
+ 	samsung_dsim_set_display_enable(dsi, true);
+ 
+-- 
+2.47.3
+

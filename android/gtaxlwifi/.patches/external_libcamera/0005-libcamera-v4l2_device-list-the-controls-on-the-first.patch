@@ -1,0 +1,37 @@
+From 8644a8485cdb672343e8bce686c1f52a46ecab3d Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:06:34 +0200
+Subject: [PATCH] libcamera: v4l2_device: list the controls on the first open
+ only
+
+Each open created new ControlId instances and repointed the device's id
+map to them. A ControlInfoMap copied before a reopen, keyed by the old
+instances, then no longer found any control by id.
+
+---
+ src/libcamera/v4l2_device.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/libcamera/v4l2_device.cpp b/src/libcamera/v4l2_device.cpp
+index 0db92c19..8debefcf 100644
+--- a/src/libcamera/v4l2_device.cpp
++++ b/src/libcamera/v4l2_device.cpp
+@@ -127,7 +127,14 @@ int V4L2Device::setFd(UniqueFD fd)
+ 	fdEventNotifier_->activated.connect(this, &V4L2Device::eventAvailable);
+ 	fdEventNotifier_->setEnabled(false);
+ 
+-	listControls();
++	/*
++	 * The controls of a device do not change when it is reopened. Listing
++	 * them again would create new ControlId instances, and the
++	 * ControlInfoMap copies held by users (keyed by the old ones) would
++	 * stop matching the device's id map.
++	 */
++	if (controlIds_.empty())
++		listControls();
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

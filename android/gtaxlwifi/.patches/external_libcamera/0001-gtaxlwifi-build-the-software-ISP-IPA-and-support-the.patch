@@ -1,0 +1,301 @@
+From 283b100af64943602daf2b45876b0825e45a7155 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 14:13:58 +0200
+Subject: [PATCH 1/2] gtaxlwifi: build the software ISP IPA and support the
+ Exynos7870 CSIS
+
+- ipa_soft_simple: the IPA module of the software ISP, built and shipped
+  inside the provider APEX (IPA_MODULE_DIR points there), with the
+  uncalibrated tuning file in /vendor/etc/libcamera/ipa/simple;
+- IPAManager: on Android, without a signing key, trust the modules in
+  IPA_MODULE_DIR instead of isolating them in a proxy worker that is not
+  installed;
+- simple pipeline: exynos7870-csis, with the software ISP;
+- camera sensor helper for the SK hynix SR259 (linear gain in 1/16,
+  black level 64 at 10 bits, measured);
+- build fixes for this tree: libyaml and libyuv linked statically as in
+  AOSP's external/libcamera, cam moved to the root package where libyaml
+  is visible, no _FORTIFY_SOURCE redefinition.
+
+---
+ Android.bp                               | 45 +++++++++++++++++++++---
+ src/android/Android.bp                   |  6 ++--
+ src/android/hal/provider/Android.bp      |  3 ++
+ src/apps/Android.bp                      | 31 +---------------
+ src/ipa/libipa/Android.bp                |  4 +++
+ src/ipa/libipa/camera_sensor_helper.cpp  | 13 +++++++
+ src/ipa/simple/Android.bp                | 45 ++++++++++++++++++++++++
+ src/libcamera/ipa_manager.cpp            |  8 +++++
+ src/libcamera/pipeline/simple/simple.cpp |  1 +
+ 9 files changed, 120 insertions(+), 36 deletions(-)
+ create mode 100644 src/ipa/libipa/Android.bp
+ create mode 100644 src/ipa/simple/Android.bp
+
+diff --git a/Android.bp b/Android.bp
+index 77d44059..5c03cd47 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -18,7 +18,6 @@ cc_defaults {
+         "-Werror",
+         "-Wshadow",
+         "-Wno-c99-designator",
+-        "-D_FORTIFY_SOURCE=2",
+     ],
+     cpp_std: "c++17",
+     cppflags: [
+@@ -27,11 +26,12 @@ cc_defaults {
+         "-DHAVE_LOCALE_T",
+         "-Wshadow",
+         "-Wno-c99-designator",
+-        "-D_FORTIFY_SOURCE=2",
+         "-Wextra-semi",
+         "-Wno-implicit-fallthrough",
+         /* Real path will be set via environment variables at runtime */
+-        "-DIPA_MODULE_DIR=\"/vendor/lib64/libcamera\"",
++        // The IPA modules ship inside the provider APEX, next to the
++        // libcamera.so they link against.
++        "-DIPA_MODULE_DIR=\"/apex/com.android.hardware.camera.libcamera/lib64/libcamera\"",
+         "-DIPA_CONFIG_DIR=\"/vendor/etc/libcamera/ipa/:/vendor/share/libcamera/ipa\"",
+         "-DIPA_PROXY_DIR=\"/vendor/bin/libcamera\"",
+         "-DLIBCAMERA_SYSCONF_DIR=\"/vendor/etc/libcamera/\"",
+@@ -64,6 +64,43 @@ cc_library_shared {
+     ],
+     shared_libs: [
+         "libdl",
+-        "libyaml"
++    ],
++    // As in AOSP's external/libcamera: libyaml has no vendor shared variant.
++    static_libs: [
++        "libyaml",
++    ],
++}
++
++cc_binary {
++    // In the root package: libyaml is visible to //external/libcamera only.
++    name: "cam",
++    vendor: true,
++    cppflags: [
++        "-DHAVE_KMS",
++    ],
++    srcs: [
++        "src/apps/cam/camera_session.cpp",
++        "src/apps/cam/capture_script.cpp",
++        "src/apps/cam/file_sink.cpp",
++        "src/apps/cam/frame_sink.cpp",
++        "src/apps/cam/main.cpp",
++        "src/apps/cam/drm.cpp",
++        "src/apps/cam/kms_sink.cpp",
++        "src/apps/common/image.cpp",
++        "src/apps/common/options.cpp",
++        "src/apps/common/stream_options.cpp",
++        "src/apps/common/event_loop.cpp",
++        "src/apps/common/ppm_writer.cpp",
++    ],
++    header_libs: [
++        "libcamera_includes",
++    ],
++    shared_libs: [
++        "libevent",
++        "libdrm",
++        "libcamera",
++    ],
++    static_libs: [
++        "libyaml",
+     ],
+ }
+diff --git a/src/android/Android.bp b/src/android/Android.bp
+index 3c913af2..97329133 100644
+--- a/src/android/Android.bp
++++ b/src/android/Android.bp
+@@ -33,6 +33,10 @@ cc_library_shared {
+         "libhardware_headers",
+     ],
+ 
++    // As in AOSP's external/libcamera.
++    static_libs: [
++        "libyuv_static",
++    ],
+     shared_libs: [
+         "libcamera_metadata",
+         "libcutils",
+@@ -43,8 +47,6 @@ cc_library_shared {
+         "libexif",
+         "libjpeg",
+         "libcamera",
+-        "libyaml",
+-        "libyuv_chromium",
+         "libdl",
+         "libui",
+     ],
+diff --git a/src/android/hal/provider/Android.bp b/src/android/hal/provider/Android.bp
+index 91df0cc7..d8ceefb4 100644
+--- a/src/android/hal/provider/Android.bp
++++ b/src/android/hal/provider/Android.bp
+@@ -80,6 +80,9 @@ apex {
+     binaries: [
+         "android.hardware.camera.provider-V1-libcamera-service",
+     ],
++    native_shared_libs: [
++        "ipa_soft_simple",
++    ],
+     prebuilts: [
+         "android.hardware.camera.libcamera.xml",
+         "android.hardware.camera.libcamera.rc",
+diff --git a/src/apps/Android.bp b/src/apps/Android.bp
+index f46613f0..3c02d21f 100644
+--- a/src/apps/Android.bp
++++ b/src/apps/Android.bp
+@@ -2,33 +2,4 @@
+ // Copyright (C) 2020 Baylibre Inc.
+ //
+ 
+-cc_binary {
+-    name: "cam",
+-    vendor: true,
+-    cppflags: [
+-        "-DHAVE_KMS",
+-    ],
+-    srcs: [
+-        "cam/camera_session.cpp",
+-        "cam/capture_script.cpp",
+-        "cam/file_sink.cpp",
+-        "cam/frame_sink.cpp",
+-        "cam/main.cpp",
+-        "cam/drm.cpp",
+-        "cam/kms_sink.cpp",
+-        "common/image.cpp",
+-        "common/options.cpp",
+-        "common/stream_options.cpp",
+-        "common/event_loop.cpp",
+-        "common/ppm_writer.cpp",
+-    ],
+-    header_libs: [
+-        "libcamera_includes",
+-    ],
+-    shared_libs: [
+-        "libevent",
+-        "libdrm",
+-        "libcamera",
+-        "libyaml"
+-    ],
+-}
++// cam is defined in the root Android.bp (libyaml visibility).
+diff --git a/src/ipa/libipa/Android.bp b/src/ipa/libipa/Android.bp
+new file mode 100644
+index 00000000..458bb09f
+--- /dev/null
++++ b/src/ipa/libipa/Android.bp
+@@ -0,0 +1,4 @@
++filegroup {
++    name: "libcamera_libipa_srcs",
++    srcs: ["*.cpp"],
++}
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index dcd69d9f..70273a38 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -509,6 +509,19 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx214", CameraSensorHelperImx214)
+ 
++class CameraSensorHelperSr259 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperSr259()
++	{
++		/* Measured: 62-64 at 10 bits, in the dark. */
++		blackLevel_ = 4096;
++		/* The driver exposes a linear gain in 1/16 steps. */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 16 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("sr259", CameraSensorHelperSr259)
++
+ class CameraSensorHelperImx219 : public CameraSensorHelper
+ {
+ public:
+diff --git a/src/ipa/simple/Android.bp b/src/ipa/simple/Android.bp
+new file mode 100644
+index 00000000..09783ced
+--- /dev/null
++++ b/src/ipa/simple/Android.bp
+@@ -0,0 +1,45 @@
++//
++// The IPA module of the software ISP, which the TI build does not ship:
++// without it IPAManager::createIPA() fails and the software ISP never
++// starts, so a raw Bayer sensor gives no camera at all.
++//
++
++cc_library_shared {
++    name: "ipa_soft_simple",
++    vendor: true,
++    // IPA_MODULE_DIR: lib64/libcamera inside the provider APEX
++    relative_install_path: "libcamera",
++    defaults: [
++        "libcamera_default_flags",
++    ],
++    cppflags: [
++        "-Wno-shadow",
++    ],
++    srcs: [
++        "ipa_context.cpp",
++        "soft_simple.cpp",
++        "algorithms/*.cpp",
++        ":libcamera_libipa_srcs",
++    ],
++    include_dirs: [
++        "external/libcamera/src/ipa",
++        "external/libcamera/src/ipa/simple",
++        "external/libcamera/include/libcamera/ipa",
++        "external/libcamera/include/libcamera",
++    ],
++    header_libs: [
++        "libcamera_includes",
++    ],
++    shared_libs: [
++        "libcamera",
++    ],
++}
++
++prebuilt_etc {
++    name: "libcamera_ipa_simple_uncalibrated.yaml",
++    vendor: true,
++    src: "data/uncalibrated.yaml",
++    filename: "uncalibrated.yaml",
++    // IPA_CONFIG_DIR/<ipa name>/
++    relative_install_path: "libcamera/ipa/simple",
++}
+diff --git a/src/libcamera/ipa_manager.cpp b/src/libcamera/ipa_manager.cpp
+index 830750dc..d16f487b 100644
+--- a/src/libcamera/ipa_manager.cpp
++++ b/src/libcamera/ipa_manager.cpp
+@@ -302,6 +302,14 @@ bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
+ 		<< (valid ? "valid" : "not valid");
+ 
+ 	return valid;
++#elif defined(__ANDROID__)
++	/*
++	 * Without a signing key every module would run isolated, in a proxy
++	 * worker that this build does not install. On Android the modules
++	 * come from the same build as libcamera and live on the read-only,
++	 * verified vendor partition: trust those, and only those.
++	 */
++	return ipa->path().rfind(IPA_MODULE_DIR "/", 0) == 0;
+ #else
+ 	return false;
+ #endif
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 4323472e..fe756f06 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -250,6 +250,7 @@ namespace {
+ 
+ static const SimplePipelineInfo supportedDevices[] = {
+ 	{ "dcmipp", {}, false },
++	{ "exynos7870-csis", {}, true },
+ 	{ "imx7-csi", { { "pxp", 1 } }, false },
+ 	{ "intel-ipu6", {}, true },
+ 	{ "j721e-csi2rx", {}, true },
+-- 
+2.47.3
+

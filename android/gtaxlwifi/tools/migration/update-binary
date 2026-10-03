@@ -1,0 +1,215 @@
+#!/sbin/sh
+# LineageOS 23.2 installer for gtaxlwifi (SM-T580), run by a recovery (TWRP,
+# later LineageOS Recovery). Same package for first install and updates.
+#
+# It writes three images at fixed places of the eMMC, the same before and
+# after the partition table changes (docs §65.10):
+#
+#   super.img   at 248 MiB  (LBA 507904: start of the factory SYSTEM, p19)
+#               liblp metadata + system, product, system_ext, vendor,
+#               vendor_dlkm, system_dlkm
+#   boot.img    at 3908 MiB (LBA 8003584: start of the factory USERDATA,
+#               p23 after the migration, §69)
+#               ext4 "boot": /uboot/android/{Image,dtb,ramdisk,cmdline.txt}
+#   u-boot.img  at 60 MiB   (LBA 122880: BOOT, p9)
+#
+# It does not partition and does not format. On the next boot U-Boot finds
+# either the factory table (or the first layout, v1) with these images in
+# place, and writes the new table and zeroes the head of metadata, misc and
+# USERDATA (Android formats them), or the migrated table, and just boots (an
+# update: data kept). Anything else: nothing is written. Over v1 the images
+# overwrite v1's boot, metadata and the start of /data: a clean install,
+# refused when the Updater app runs the package.
+#
+# Only sh, dd, head, tail, sha256sum are needed, and shell arithmetic only
+# on small counters (TWRP's is 32-bit, §65.7). Files come out of the zip
+# through gtaxl-unzip (gtaxl-unzip.c), appended to this script by build-zip.sh at HELPER_OFFSET:
+# it reads the zip also through the block map the recovery passes when the
+# Updater app installs (ZIP = @/cache/recovery/block.map), which unzip cannot,
+# and the recovery extracts nothing but this file from such a package. The
+# images are in 64 MiB pieces, each with its offset in MiB in parts.txt
+# (§65.12).
+#
+# An update keeps the addons (GApps) as LineageOS's own packages do (§69):
+# backuptool.sh backup before super is written, restore after. In between the
+# logical partitions move, so gtaxl-dm points the recovery's device-mapper
+# devices at the new extents (lp-map.txt): the restore, and an addon installed
+# in the same session, write where the new super has them.
+#
+# Recovery arguments: $1 API version, $2 fd for ui_print, $3 zip path or
+# @block.map.
+
+OUTFD=$2
+ZIP=$3
+DISK=/dev/block/mmcblk0
+T=/tmp/gtaxl
+LOG=$T/install.log
+HELPER_OFFSET=0000000000	# set by build-zip.sh: gtaxl-unzip starts at this byte (tail -c +N)
+
+# /proc/self/fd, not >&"$OUTFD": the recovery's shell rejects fds over 9 there
+ui() { printf 'ui_print %s\nui_print\n' "$*" >> /proc/self/fd/"$OUTFD"; echo "$*" >> "$LOG"; }
+# an addon backup on USERDATA is released on the way out (see backup_store)
+die() { ui "ERROR: $*"; ui "Log in $LOG"; [ "${BK_ACTIVE:-0}" = 1 ] && backup_store_release; exit 1; }
+step() { ui "- $*"; }
+# the recovery's progress bar: after the signature check (its first 25%) it is
+# ours, and stays where it is unless told. prog <permille of our part>
+prog() { printf 'set_progress %d.%03d\n' $(($1 / 1000)) $(($1 % 1000)) >> /proc/self/fd/"$OUTFD"; }
+
+rm -rf "$T"; mkdir -p "$T"; : > "$LOG"
+ui "LineageOS 23.2 for gtaxlwifi"
+printf 'progress 1.0 0\n' >> /proc/self/fd/"$OUTFD"
+
+[ "$(getprop ro.product.device)" = gtaxlwifi ] || [ "$(getprop ro.build.product)" = gtaxlwifi ] \
+	|| die "this zip is for gtaxlwifi (SM-T580) only"
+
+for x in dd head tail sha256sum; do
+	command -v $x >/dev/null 2>&1 || die "$x missing in this recovery"
+done
+
+cd "$T" || die "cannot use $T"
+tail -c +"$HELPER_OFFSET" "$0" > "$T/gtaxl-unzip" && chmod 755 "$T/gtaxl-unzip" || die "no gtaxl-unzip in $0"
+# the block map lives in /cache/recovery, which is unmounted below: a copy
+case $ZIP in
+@*)	cp "${ZIP#@}" "$T/block.map" || die "cannot read the block map ${ZIP#@}"
+	ZIP=@$T/block.map ;;
+esac
+UNZIP=$T/gtaxl-unzip
+mkdir -p "$T/gtaxl"
+for f in gtaxl-gpt gtaxl-dm lp-map.txt sha256.txt parts.txt; do
+	"$UNZIP" "$ZIP" "gtaxl/$f" > "$T/gtaxl/$f" 2>>"$LOG" || die "incomplete zip ($f)"
+done
+chmod 755 "$T/gtaxl/gtaxl-gpt" "$T/gtaxl/gtaxl-dm"
+# backuptool finds its functions in /tmp/install/bin, as in LineageOS packages
+mkdir -p /tmp/install/bin
+for f in backuptool.sh backuptool.functions; do
+	"$UNZIP" "$ZIP" "gtaxl/install/bin/$f" > "/tmp/install/bin/$f" 2>>"$LOG" || die "incomplete zip ($f)"
+done
+chmod 755 /tmp/install/bin/backuptool.sh
+
+# nothing of the eMMC may be mounted while it is rewritten
+for m in /system_root /system /mnt/system /product /system_ext /vendor /vendor_dlkm \
+	/system_dlkm /data /sdcard /cache /metadata /persist; do
+	umount "$m" 2>/dev/null
+done
+grep -q "^${DISK}p\(19\|2[2-5]\) " /proc/mounts && die "partitions still mounted"
+
+# the table must be the factory one or ours; the images go where both put them
+dd if=$DISK of=$T/gpt.bin bs=512 skip=1 count=33 2>>"$LOG" || die "reading the GPT"
+STATUS=$("$T/gtaxl/gtaxl-gpt" status "$T/gpt.bin" "$(cat /sys/block/mmcblk0/size)"); RC=$?
+ui "Partition table: $STATUS"
+case $RC in
+0)	FRESH=1 ;;
+3)	FRESH=0 ;;
+4)	# v1: the layout changes and /data goes (§69). The Updater app promises
+	# an update that keeps data: only from the recovery's own menu.
+	case $ZIP in
+	@*)	die "this build changes the partition layout and erases all data: install it from the recovery (adb sideload), nothing written" ;;
+	esac
+	ui "The partition layout changes: ALL DATA WILL BE ERASED."
+	FRESH=1 ;;
+*)	die "partition table not recognised, nothing written" ;;
+esac
+
+# addons: only on an update, and only if the recovery mapped super (a
+# recovery without ro.boot.dynamic_partitions never let one be installed).
+# backuptool keeps them in /tmp/backupdir, and GApps are ~1.1 GB: in RAM
+# that is an out-of-memory panic on this 2 GB tablet (§69). The directory is
+# put on USERDATA instead: a folder of /data, or, if Android has not
+# formatted it yet (install, addons, update before the first boot), a
+# scratch ext4 whose head is zeroed again afterwards, so that Android still
+# finds the partition wiped and formats it.
+BACKUP=0
+BK_MNT=/tmp/gtaxl-bk
+BK_DEV=/dev/block/by-name/USERDATA
+BK_SCRATCH=0
+backup_store() {
+	mkdir -p $BK_MNT /tmp/backupdir
+	if ! mount -t ext4 $BK_DEV $BK_MNT 2>>"$LOG"; then
+		# anything but a wiped head (4 KiB of zeros) is data: leave it alone
+		[ "$(head -c 4096 $BK_DEV | tr -d '\000' | head -c 1 | wc -c)" = 0 ] || return 1
+		BK_SCRATCH=1
+		BK_ACTIVE=1
+		mke2fs -F -q -t ext4 $BK_DEV >>"$LOG" 2>&1 || return 1
+		mount -t ext4 $BK_DEV $BK_MNT 2>>"$LOG" || return 1
+	fi
+	BK_ACTIVE=1
+	mkdir -p $BK_MNT/gtaxl-addon-backup && mount -o bind $BK_MNT/gtaxl-addon-backup /tmp/backupdir
+}
+backup_store_release() {
+	BK_ACTIVE=0
+	umount /tmp/backupdir 2>/dev/null
+	rm -rf $BK_MNT/gtaxl-addon-backup
+	umount $BK_MNT 2>/dev/null
+	[ $BK_SCRATCH = 1 ] && dd if=/dev/zero of=$BK_DEV bs=1048576 count=1 2>>"$LOG"
+	BK_SCRATCH=0
+}
+if [ $FRESH = 0 ] && [ -b /dev/block/mapper/system ]; then
+	backup_store || die "no room on USERDATA for the addon backup, nothing written"
+	step "backing up addons"
+	/tmp/install/bin/backuptool.sh backup /dev/block/mapper/system ext4 >>"$LOG" 2>&1 \
+		|| die "addon backup failed, nothing written"
+	BACKUP=1
+fi
+# permille of the bar at the end of each phase: writing dominates; the addon
+# backup and restore (~1.1 GB each with GApps) only on an update with addons
+if [ $BACKUP = 1 ]; then P0=150 P1=750 P2=850; else P0=0 P1=850 P2=1000; fi
+prog $P0
+NPARTS=$(grep -c . "$T/gtaxl/parts.txt")
+NIMGS=$(grep -c . "$T/gtaxl/sha256.txt")
+
+# pieces, in order: path in the zip, offset in MiB (parts.txt, build-zip.sh)
+last=
+i=0
+while read -r part mib; do
+	img=${part#parts/}; img=${img%.*}
+	[ "$img" = "$last" ] || step "$img -> ${mib} MiB"
+	last=$img
+	# no pipefail in every recovery's shell: the helper's failure leaves a mark
+	{ "$UNZIP" "$ZIP" "gtaxl/$part" 2>>"$LOG" || : > "$T/unzip-failed"; } \
+		| dd of=$DISK bs=1048576 seek="$mib" 2>>"$LOG" || die "writing $part"
+	[ -e "$T/unzip-failed" ] && die "reading $part from the zip"
+	i=$((i + 1)); prog $((P0 + (P1 - P0) * i / NPARTS))
+done < "$T/gtaxl/parts.txt"
+sync
+
+# sha256, name, offset in MiB, size in bytes, size in MiB (rounded up) of the
+# whole images: from sha256.txt, written by build-zip.sh
+i=0
+while read -r sha name mib size count; do
+	got=$(dd if=$DISK bs=1048576 skip="$mib" count="$count" 2>/dev/null | head -c "$size" | sha256sum)
+	[ "${got%% *}" = "$sha" ] || die "$name does not read back the same"
+	ui "  $name verified"
+	i=$((i + 1)); prog $((P1 + (P2 - P1) * i / NIMGS))
+done < "$T/gtaxl/sha256.txt"
+
+sync
+
+if [ $FRESH = 0 ]; then
+	"$T/gtaxl/gtaxl-dm" /dev/block/by-name/super "$T/gtaxl/lp-map.txt" >>"$LOG" 2>&1 \
+		|| die "cannot map the new logical partitions: reboot to recovery before anything else"
+	if [ $BACKUP = 1 ]; then
+		step "restoring addons"
+		/tmp/install/bin/backuptool.sh restore /dev/block/mapper/system ext4 >>"$LOG" 2>&1 \
+			|| die "addon restore failed: install them again"
+		sync
+		backup_store_release
+	fi
+else
+	# the table changes only on the next boot: mappings of the old super
+	# would send an addon to the wrong sectors. Removed, an addon fails to
+	# mount instead, until the recovery restarts.
+	"$T/gtaxl/gtaxl-dm" --remove "$T/gtaxl/lp-map.txt" >>"$LOG" 2>&1
+fi
+
+ui ""
+if [ $FRESH = 1 ]; then
+	ui "Done. Reboot to system: U-Boot will now set up the partitions,"
+	ui "and the first boot takes a few minutes. All data is erased."
+	ui "To install addons (GApps), reboot to recovery first."
+else
+	ui "Done (update, data kept). Reboot to system."
+fi
+prog 1000
+cp "$LOG" /tmp/recovery-gtaxl.log 2>/dev/null
+exit 0
+# gtaxl-unzip follows (build-zip.sh); the shell never reads past exit

@@ -1,0 +1,50 @@
+From c6f950f852d43433eb8b905795765c60d8f27110 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 14 Aug 2026 21:30:00 +0000
+Subject: [PATCH] extcon: sm5502: set the detection timing at probe
+
+TIMING_SET1 is left at its reset value, which selects a 50 ms detection
+window.  The vendor driver programs 200 ms instead, and that difference
+shows when a cable is already plugged in as the system boots: the chip
+finishes its measurement before the host has answered and settles on a
+plain SDP port.
+
+On a Galaxy Tab A (SM-T580) booting with the cable in a charging
+downstream port leaves DEV_TYPE1 at 0x04 for good - the chip does not
+repeat the measurement on its own, so the extcon device reports SDP and
+the charger stays at the 500 mA limit until the cable is cycled by hand.
+Writing 200 ms at probe, as the vendor driver does, gives the
+measurement enough room to land on the right answer.
+
+The key press timing is programmed alongside it, matching the vendor
+value, so that the whole register is defined rather than half of it
+inheriting the reset default.
+
+Note that reg_data entries with invert unset are written complemented,
+so this entry carries invert set in order to reach the register as it
+is.
+---
+ drivers/extcon/extcon-sm5502.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index 7933db77c1..c2a0d94dbc 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -81,6 +81,13 @@ static struct reg_data sm5502_reg_data[] = {
+ 		.reg = SM5502_REG_CONTROL,
+ 		.val = SM5502_REG_CONTROL_MASK_INT_MASK,
+ 		.invert = false,
++	}, {
++		.reg = SM5502_REG_TIMING_SET1,
++		.val = (TIMING_ADC_DET_200MS
++				<< SM5502_REG_TIMING_SET1_ADC_DET_SHIFT)
++			| (TIMING_KEY_PRESS_100MS
++				<< SM5502_REG_TIMING_SET1_KEY_PRESS_SHIFT),
++		.invert = true,
+ 	}, {
+ 		.reg = SM5502_REG_INTMASK1,
+ 		.val = SM5502_REG_INTM1_KP_MASK
+-- 
+2.47.3
+

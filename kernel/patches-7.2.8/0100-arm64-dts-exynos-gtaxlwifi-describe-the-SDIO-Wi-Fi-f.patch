@@ -1,0 +1,32 @@
+From 035ebbef1a03b3a69dc48e5fb204d8f860b5f169 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 17 Sep 2026 13:54:33 +0200
+Subject: [PATCH] arm64: dts: exynos: gtaxlwifi: describe the SDIO Wi-Fi
+ function
+
+The QCA9377 has no factory MAC address in its firmware or board file.
+Add a node for SDIO function 1 of mmc1 so that ath10k can pick up a
+local-mac-address property, filled in by the bootloader from the EFS.
+---
+ arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+index 4b8555bcc0..c7ed28f7ea 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+@@ -1342,6 +1342,11 @@ &mmc1 {
+ 	keep-power-in-suspend;
+ 
+ 	status = "okay";
++
++	/* QCA9377, funzione SDIO 1: local-mac-address lo scrive U-Boot dalla EFS. */
++	wifi@1 {
++		reg = <1>;
++	};
+ };
+ 
+ /*
+-- 
+2.47.3
+

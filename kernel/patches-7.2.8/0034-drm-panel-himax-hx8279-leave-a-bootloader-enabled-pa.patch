@@ -1,0 +1,108 @@
+From 85d094e0b542afb92002eb5531cc222ff60c8a82 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 10:00:02 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: leave a bootloader-enabled panel
+ alone
+
+If the reset GPIO is high and both supplies report enabled at the
+first prepare, the bootloader has already initialised the panel:
+skip the reset pulse and the init table, and only take over the
+software state.
+
+Folds two follow-ups. The detection requires the supplies to be on,
+not just claimable, so a cold start (reset low or supplies off) is
+recognised as such. And the handoff path raises MIPI_DSI_MODE_LPM
+just as the cold init sequence does: display-on and the backlight
+writes must go out as LP commands, because HS commands only travel
+inside the HS video stream and scanout is deliberately not running
+yet at that point - without the flag they sat in the header FIFO
+until the first flush.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 57 ++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index a253e86f2d..a5d9aeec36 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -141,6 +141,7 @@ struct hx8279 {
+ 	struct mutex page_lock;
+ 	bool prepared;
+ 	bool ids_read;
++	bool handoff;
+ 	u8 last_page;
+ 	bool skip_voltage_config;
+ 	bool skip_goa_config;
+@@ -933,6 +934,41 @@ static int hx8279_prepare(struct drm_panel *panel)
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+ 	int ret;
+ 
++	if (hx->handoff) {
++		/*
++		 * Take the regulator references so that the counts stay
++		 * balanced against unprepare(), but leave the hardware
++		 * exactly as the bootloader left it.
++		 */
++		ret = regulator_bulk_enable(ARRAY_SIZE(hx->vregs), hx->vregs);
++		if (ret)
++			return ret;
++
++		hx->handoff = false;
++
++		/*
++		 * The cold path raises MIPI_DSI_MODE_LPM further down and
++		 * it stays up for every later command. Taking this early
++		 * return without it leaves display-on and the backlight
++		 * writes going out as HS commands, and those only travel
++		 * inside the HS video stream: with scanout deliberately
++		 * not started yet, they sit in the header FIFO until the
++		 * first flush. LP escape transmission does not need video,
++		 * so use it on this path too.
++		 */
++		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++		if (hx->dsi[1])
++			hx->dsi[1]->mode_flags |= MIPI_DSI_MODE_LPM;
++
++		mutex_lock(&hx->page_lock);
++		hx->prepared = true;
++		mutex_unlock(&hx->page_lock);
++
++		dev_info(&dsi->dev, "panel enabled by the bootloader, leaving it as it is\n");
++
++		return 0;
++	}
++
+ 	if (desc->iovcc_to_vdd_delay_ms) {
+ 		/* Vendor order: I/O rail first, then the panel supply */
+ 		ret = regulator_enable(hx->vregs[1].consumer);
+@@ -1346,6 +1382,27 @@ static int hx8279_probe(struct mipi_dsi_device *dsi)
+ 		return dev_err_probe(dev, PTR_ERR(hx->reset_gpio),
+ 				     "Failed to get reset GPIO\n");
+ 
++	/*
++	 * The bootloader hands over a running panel: reset deasserted and
++	 * both supplies already up. Repeating the power sequence, the reset
++	 * pulse and the whole register configuration on a live link is what
++	 * the vendor driver carefully avoids, so skip all of it for the
++	 * first modeset.
++	 *
++	 * Both conditions are needed. The reset line alone is not reliable
++	 * once the driver has released it, while the supplies are only ever
++	 * left on across a probe by the bootloader.
++	 */
++	hx->handoff = gpiod_get_value_cansleep(hx->reset_gpio) > 0 &&
++		      regulator_is_enabled(hx->vregs[0].consumer) > 0 &&
++		      regulator_is_enabled(hx->vregs[1].consumer) > 0;
++
++	dev_info(dev, "reset=%d vdd=%d iovcc=%d -> %s\n",
++		 gpiod_get_value_cansleep(hx->reset_gpio),
++		 regulator_is_enabled(hx->vregs[0].consumer),
++		 regulator_is_enabled(hx->vregs[1].consumer),
++		 hx->handoff ? "bootloader handoff" : "cold start");
++
+ 	/* If the panel is connected on two DSIs then DSI0 left, DSI1 right */
+ 	dsi_r = of_graph_get_remote_node(dsi->dev.of_node, 1, -1);
+ 	if (dsi_r) {
+-- 
+2.47.3
+

@@ -1,0 +1,20 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// libwrappergps for gpsd (§75.9): on Samsung devices with a modem it acts as
+// the bridge to the RIL; on Wi-Fi models, like this one, Samsung ships a
+// version that does nothing. This is its open equivalent, replacing the blob
+// from the SM-P610 firmware.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_library_shared {
+    name: "libwrappergps",
+    srcs: ["wrappergps.c"],
+    vendor: true,
+    compile_multilib: "64",
+    cflags: ["-Wall", "-Werror"],
+}

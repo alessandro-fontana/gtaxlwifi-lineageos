@@ -1,0 +1,49 @@
+#
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Installed as /odm/etc/ueventd.rc (-> /vendor/odm/etc), which
+# /system/etc/ueventd.rc imports. Adds to the generic device's /vendor/etc/ueventd.rc.
+# IIO sensors (gtaxlwifi, §48). The node is created crw------- root root and
+# the multihal HAL runs as `system`: without this line opening it fails with
+# a plain UNIX EACCES — not an SELinux denial, which indeed does not show up —
+# and SensorService answers PERMISSION_DENIED to whoever registers the sensor.
+# The HAL opens the node for polled sensors too, so this always applies.
+/dev/iio:device*	0660	system	system
+
+# The touchscreen's key_swap attribute (gtaxlwifi, §50.9). Same lesson as
+# §48.5, on a different object: the vendor.lineage.touch HAL runs as
+# `system`, the sysfs attribute is created 0644 root:root, and without this
+# line the write fails with a UNIX EACCES — not an SELinux denial, which
+# indeed would not show up.
+/sys/devices/platform/soc@0/13840000.i2c/i2c-2/2-0049	key_swap	0660	system	system
+/sys/devices/platform/soc@0/13840000.i2c/i2c-2/2-0049	key_disable	0660	system	system
+
+# The GPS rfkill state (gtaxlwifi, §54). gpsd runs as `gps` and writes
+# "1"/"0" to it to power the BCM4752 on and off (through the
+# /data/vendor/gps/nstdby link); the attribute is created 0644 root:root.
+# The rfkillN index is not stable, the parent is: hence the glob.
+/sys/devices/platform/gps/rfkill/rfkill*	state	0660	gps	system
+
+# Rear camera flash LED (SM5703, §57): turned on by the camera HAL, which
+# runs as cameraserver. The .N.auto id of the MFD cell changes, hence the
+# wildcard. The strobe (§57.21): current, maximum duration and firing for
+# the shot.
+/sys/devices/platform/soc@0/13870000.i2c/i2c-4/4-0049/sm5703-flash.*/leds/white:flash	brightness	0664	cameraserver	camera
+/sys/devices/platform/soc@0/13870000.i2c/i2c-4/4-0049/sm5703-flash.*/leds/white:flash	flash_strobe	0664	cameraserver	camera
+/sys/devices/platform/soc@0/13870000.i2c/i2c-4/4-0049/sm5703-flash.*/leds/white:flash	flash_brightness	0664	cameraserver	camera
+/sys/devices/platform/soc@0/13870000.i2c/i2c-4/4-0049/sm5703-flash.*/leds/white:flash	flash_timeout	0664	cameraserver	camera
+
+# LineageOS charging control (§68.5): the vendor.lineage.health HAL runs
+# as system and writes the charger's charging_enabled (1 / 0, §76).
+# Without this line: Permission denied, with no SELinux denial at all (the
+# node is created 0644 root:root).
+/sys/devices/platform/soc@0/13870000.i2c/i2c-4/4-0049/sm5703-charger.*/power_supply/sm5703-charger	charging_enabled	0664	system	system
+
+# The exynos-drm render node (§70): nobody must use it for rendering,
+# which goes to panfrost (renderD129). hardware_detect replaced it with a
+# link to /dev/null; here it simply cannot be opened. Assumption: exynos-drm
+# and panfrost are built-in, and the former always creates renderD128 (never
+# seen otherwise, 1/10); minigbm takes the first node that opens. If that
+# changes, this line changes.
+/dev/dri/renderD128	0000	root	root

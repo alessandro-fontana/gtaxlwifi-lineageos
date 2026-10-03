@@ -1,0 +1,92 @@
+From eb7e36322ca04de08b38ab14ad97afd8ff029e11 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 1 Oct 2026 11:20:30 +0200
+Subject: [PATCH] dm-inlinecrypt: optionally answer to Android's default-key
+ name
+
+Android's vold sets up adoptable storage with a device-mapper target named
+default-key, whose table syntax for options format 2 is the one of
+dm-inlinecrypt: '<cipher> <key> <iv_offset> <dev> <start> 3 allow_discards
+sector_size:4096 iv_large_sectors'. Add DM_INLINECRYPT_DEFAULT_KEY to
+register the target under that name as well, so that Android runs on a
+mainline kernel. The passthrough of an upper layer's inline encryption,
+left out of dm-inlinecrypt, is not needed there: fscrypt then encrypts
+file contents in software, and they are encrypted again below.
+
+---
+ drivers/md/Kconfig          |  9 +++++++++
+ drivers/md/dm-inlinecrypt.c | 37 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/drivers/md/Kconfig b/drivers/md/Kconfig
+index df27c7d066..2816a64932 100644
+--- a/drivers/md/Kconfig
++++ b/drivers/md/Kconfig
+@@ -326,6 +326,15 @@ config DM_INLINECRYPT
+ 	  take advantage of inline encryption hardware such as that commonly
+ 	  built into UFS host controllers.
+ 
++config DM_INLINECRYPT_DEFAULT_KEY
++	bool "Also register the target as Android's default-key"
++	depends on DM_INLINECRYPT
++	help
++	  Android's vold sets up adoptable storage with a device-mapper
++	  target named "default-key", with the table syntax of
++	  dm-inlinecrypt. Say Y to run Android's adoptable storage on this
++	  kernel.
++
+ config DM_SNAPSHOT
+        tristate "Snapshot target"
+        depends on BLK_DEV_DM
+diff --git a/drivers/md/dm-inlinecrypt.c b/drivers/md/dm-inlinecrypt.c
+index 41293c18d1..d0ac9cf30b 100644
+--- a/drivers/md/dm-inlinecrypt.c
++++ b/drivers/md/dm-inlinecrypt.c
+@@ -612,7 +612,44 @@ static struct target_type inlinecrypt_target = {
+ 	.io_hints		= inlinecrypt_io_hints,
+ };
+ 
++#ifdef CONFIG_DM_INLINECRYPT_DEFAULT_KEY
++/*
++ * Android's vold sets up adoptable storage with the "default-key" target,
++ * with the same table syntax: "<cipher> <key> <iv_offset> <dev> <start>
++ * [<#opt> allow_discards sector_size:N iv_large_sectors]". Answer to that
++ * name too. What dm-inlinecrypt leaves out (passing through the inline
++ * encryption of the layer above) is not needed there: file contents
++ * encrypted by fscrypt are simply encrypted again.
++ */
++static struct target_type default_key_target;
++
++static int __init dm_inlinecrypt_init(void)
++{
++	int r;
++
++	r = dm_register_target(&inlinecrypt_target);
++	if (r)
++		return r;
++
++	default_key_target = inlinecrypt_target;
++	default_key_target.name = "default-key";
++	r = dm_register_target(&default_key_target);
++	if (r)
++		dm_unregister_target(&inlinecrypt_target);
++	return r;
++}
++
++static void __exit dm_inlinecrypt_exit(void)
++{
++	dm_unregister_target(&default_key_target);
++	dm_unregister_target(&inlinecrypt_target);
++}
++
++module_init(dm_inlinecrypt_init);
++module_exit(dm_inlinecrypt_exit);
++#else
+ module_dm(inlinecrypt);
++#endif
+ 
+ MODULE_AUTHOR("Eric Biggers <ebiggers@google.com>");
+ MODULE_AUTHOR("Linlin Zhang <linlin.zhang@oss.qualcomm.com>");
+-- 
+2.47.3
+

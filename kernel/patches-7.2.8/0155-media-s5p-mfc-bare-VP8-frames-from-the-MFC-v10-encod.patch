@@ -1,0 +1,54 @@
+From 615fb3166251c81592ca6af08645b966360ee6ee Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 20:22:20 +0200
+Subject: [PATCH] media: s5p-mfc: bare VP8 frames from the MFC v10 encoder
+
+MFC v10 wraps the VP8 stream it encodes in IVF unless bit 12 of
+E_VP8_OPTION is set: a 32 byte file header as the first capture buffer
+and a 12 byte frame header in front of each frame. V4L2_PIX_FMT_VP8 is
+the bare frames, and a decoder given the IVF headers fails on nearly
+every frame (invalid sync code, invalid partitions). The vendor driver
+always sets the bit; set it for MFC v10 and later.
+
+Tested on Exynos7870 (MFC 0xa0b0): 150 frames at 720p and 90 at 1080p
+and in portrait, all decoded by ffmpeg without errors.
+
+---
+ drivers/media/platform/samsung/s5p-mfc/regs-mfc-v10.h   | 3 +++
+ drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c | 7 +++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v10.h b/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v10.h
+index fadd9139b4..39c87e035d 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v10.h
++++ b/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v10.h
+@@ -83,5 +83,8 @@
+ 	(((x + 3) * (y + 3) * 32)	\
+ 	 + ((y * 128) + 1280) * DIV_ROUND_UP(x, 4))
+ 
++/* E_VP8_OPTION: no IVF file and frame headers around the stream */
++#define S5P_FIMV_E_VP8_OPTION_DISABLE_IVF_HEADER_V10	BIT(12)
++
+ #endif /*_REGS_MFC_V10_H*/
+ 
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+index b48b693c03..913c507dfe 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+@@ -1635,6 +1635,13 @@ static int s5p_mfc_set_enc_params_vp8(struct s5p_mfc_ctx *ctx)
+ 	}
+ 	reg |= (val & 0xF) << 3;
+ 	reg |= (p_vp8->num_ref & 0x2);
++	/*
++	 * MFC v10 wraps the stream in IVF unless told not to: a file header
++	 * as the first buffer and a 12 byte header in front of each frame.
++	 * V4L2_PIX_FMT_VP8 is the bare frames.
++	 */
++	if (IS_MFCV10_PLUS(dev))
++		reg |= S5P_FIMV_E_VP8_OPTION_DISABLE_IVF_HEADER_V10;
+ 	writel(reg, mfc_regs->e_vp8_options);
+ 
+ 	mfc_debug_leave();
+-- 
+2.47.3
+

@@ -1,0 +1,75 @@
+From 1ab99596276b1c0b1f660e5c65403bf1ac944409 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 23 Sep 2026 18:04:13 +0200
+Subject: [PATCH] drm/exynos: release the old framebuffers when the flip is
+ done
+
+drm_atomic_helper_commit_tail_rpm() waits for one vblank after the flush
+and then lets cleanup_planes() drop the old framebuffers.  That is only
+right if the hardware always takes the new configuration at the vblank
+that follows the flush.  On the Exynos7870 DECON it does not: when the
+flush lands close enough to the vblank, the shadow registers miss it,
+the block scans the old buffers for one more frame, and by then they
+have been released - with the composer closing the last dma-buf
+reference, the IOMMU mapping goes away under the scanout and the SysMMU
+takes a page fault.
+
+Wait for flip_done instead.  It completes when the CRTC sends the
+commit's event, which every exynos CRTC driver already does from its
+vblank handler, so nothing changes for a driver that arms the event at
+flush time; a driver that knows when its registers really latch can hold
+the event back until then, and the framebuffers follow.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ drivers/gpu/drm/exynos/exynos_drm_fb.c | 33 +++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/exynos/exynos_drm_fb.c b/drivers/gpu/drm/exynos/exynos_drm_fb.c
+index 4cff2b2b63..b0a03a6f9a 100644
+--- a/drivers/gpu/drm/exynos/exynos_drm_fb.c
++++ b/drivers/gpu/drm/exynos/exynos_drm_fb.c
+@@ -153,8 +153,39 @@ dma_addr_t exynos_drm_fb_dma_addr(struct drm_framebuffer *fb, int index)
+ 	return exynos_gem->dma_addr + fb->offsets[index];
+ }
+ 
++/*
++ * drm_atomic_helper_commit_tail_rpm(), except that the old framebuffers are
++ * released once the flip is done rather than after the next vblank.
++ *
++ * The two are the same thing only if the hardware always takes the new
++ * configuration at the vblank that follows the flush. A CRTC driver that
++ * knows better - because its shadow registers can miss that vblank - holds
++ * the event back until they have really latched, and cleanup_planes() must
++ * wait for exactly that: until then the display is still fetching the old
++ * buffers.
++ */
++static void exynos_drm_atomic_commit_tail(struct drm_atomic_commit *state)
++{
++	struct drm_device *dev = state->dev;
++
++	drm_atomic_helper_commit_modeset_disables(dev, state);
++
++	drm_atomic_helper_commit_modeset_enables(dev, state);
++
++	drm_atomic_helper_commit_planes(dev, state,
++					DRM_PLANE_COMMIT_ACTIVE_ONLY);
++
++	drm_atomic_helper_fake_vblank(state);
++
++	drm_atomic_helper_commit_hw_done(state);
++
++	drm_atomic_helper_wait_for_flip_done(dev, state);
++
++	drm_atomic_helper_cleanup_planes(dev, state);
++}
++
+ static struct drm_mode_config_helper_funcs exynos_drm_mode_config_helpers = {
+-	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
++	.atomic_commit_tail = exynos_drm_atomic_commit_tail,
+ };
+ 
+ static const struct drm_mode_config_funcs exynos_drm_mode_config_funcs = {
+-- 
+2.47.3
+

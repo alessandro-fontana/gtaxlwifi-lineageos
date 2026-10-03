@@ -1,0 +1,44 @@
+From 4e6ffed33236fb4e81d77b728cbe5dd7356708a5 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 1 Oct 2026 13:02:45 +0200
+Subject: [PATCH] android: no fixed-focus scene override on a camera with a
+ focuser
+
+The scene mode override list asked for AF off, which the API1 shim of the
+camera service reads as fixed focus: on a camera that reports a minimum
+focus distance it requires an infinity focus calibration, and without
+one it refuses to open the device ('Scene mode override lists asks for
+fixed focus on a device with focuser but not calibrated for infinity
+focus'). Apps on the legacy camera API, such as the Wi-Fi QR code scanner
+of Settings, saw no camera. Ask for continuous-picture AF when the camera
+has a focuser.
+
+---
+ src/android/camera_capabilities.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
+index be5d6d09..ab6681b6 100644
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -1177,10 +1177,16 @@ int CameraCapabilities::initializeStaticMetadata()
+ 	staticMetadata_->addEntry(ANDROID_CONTROL_MAX_REGIONS,
+ 				  availableMaxRegions);
+ 
++	/*
++	 * AF off in a scene mode means fixed focus, which a camera with a
++	 * focuser can only honour at an infinity focus calibration it does not
++	 * have: the API1 shim of the camera service then refuses the device.
++	 */
+ 	std::vector<uint8_t> sceneModesOverride = {
+ 		ANDROID_CONTROL_AE_MODE_ON,
+ 		ANDROID_CONTROL_AWB_MODE_AUTO,
+-		ANDROID_CONTROL_AF_MODE_OFF,
++		static_cast<uint8_t>(afAvailable_ ? ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE
++						  : ANDROID_CONTROL_AF_MODE_OFF),
+ 	};
+ 	staticMetadata_->addEntry(ANDROID_CONTROL_SCENE_MODE_OVERRIDES,
+ 				  sceneModesOverride);
+-- 
+2.47.3
+

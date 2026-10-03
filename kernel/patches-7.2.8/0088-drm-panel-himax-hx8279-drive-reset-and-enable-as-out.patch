@@ -1,0 +1,57 @@
+From 873e38ae07bc9473c7e895fde614f708b27691de Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 08:15:32 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: drive reset and enable as outputs
+ before toggling them
+
+The reset and enable lines are requested GPIOD_ASIS so that a panel the
+bootloader left running is not disturbed at probe, and the driver then
+only ever calls gpiod_set_value() on them. That inherits whatever
+direction the bootloader left. On gtaxlwifi RESX (gpd4-1) is left as an
+input held high by its pull-up, and on the Samsung pinctrl a set_value on
+an input pin writes DAT without touching CON: the reset the driver
+believes it asserts in power_off() and releases in prepare() never
+reaches the panel. The DriverIC is only ever reset by its own power-on
+reset when the LCD rails come back, with RESX already high, which the
+datasheet does not allow and which sometimes leaves the GOA timing in a
+bad state: horizontal single-line stripes on a wake-up, worse on the
+next one, seen three times on kernel #15-#17 with an otherwise identical
+and error-free DSI sequence in dmesg.
+
+power_off() is the first place the driver drives the lines after the
+bootloader handoff, so set the direction there: gpiod_direction_output()
+instead of gpiod_set_value(), for both lines. Every later set_value in
+prepare(), including the reset pulse, then really toggles the pin. The
+enable line is optional and a NULL descriptor is a no-op.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 0413745076..d680d5ced6 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -920,9 +920,18 @@ static void hx8279_power_off(struct hx8279 *hx)
+ 	/* The DriverIC comes back on page 0 after a power cycle */
+ 	hx->last_page = 0;
+ 
+-	gpiod_set_value_cansleep(hx->reset_gpio, 0);
++	/*
++	 * The lines are requested GPIOD_ASIS so that a panel left running
++	 * by the bootloader is not disturbed at probe. The direction is
++	 * therefore whatever the bootloader left: on gtaxlwifi RESX (gpd4-1)
++	 * is an input held high by its pull-up, and gpiod_set_value() on an
++	 * input pin never reaches the panel. This is the first time the
++	 * driver drives the lines, so make them outputs here; every later
++	 * gpiod_set_value() in prepare() then really toggles the pin.
++	 */
++	gpiod_direction_output(hx->reset_gpio, 0);
+ 	usleep_range(100, 500);
+-	gpiod_set_value_cansleep(hx->enable_gpio, 0);
++	gpiod_direction_output(hx->enable_gpio, 0);
+ 	regulator_bulk_disable(ARRAY_SIZE(hx->vregs), hx->vregs);
+ }
+ 
+-- 
+2.47.3
+

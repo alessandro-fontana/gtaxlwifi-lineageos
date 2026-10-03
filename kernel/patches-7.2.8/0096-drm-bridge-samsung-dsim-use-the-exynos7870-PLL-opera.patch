@@ -1,0 +1,64 @@
+From 5b4fbe015cfaa9e09b85f37641fbd7552eba0da8 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 13:29:31 +0000
+Subject: [PATCH] drm: bridge: samsung-dsim: use the exynos7870 PLL operating
+ point
+
+The exynos7870 driver data carries m_max = 125, min_freq = 500 and
+max_freq = 1500, the same numbers as the exynos5433 entry a few lines
+above, from which they were copied. They do not describe this PLL.
+
+samsung_dsim_pll_find_pms() checks m against m_min/m_max and the VCO
+frequency, m * fin / p, against min_freq/max_freq. On gtaxlwifi, fin is
+26 MHz and the panel asks for 979.33 MHz: with those limits the only
+solution the search can accept is p 3, m 113, s 0, which runs the VCO at
+979.33 MHz. The vendor never searches at all - its driver reads the
+values from the device tree, with a comment saying they come from the
+PLL calculation tool and are to be used as given - and for this panel
+the device tree says timing,pms = <3 226 1>, a VCO of 1958.7 MHz. Same
+output frequency, twice the VCO, and the low one is a point Samsung does
+not use on this SoC.
+
+The exact limits of this PLL are not published, so pick them so that the
+search reproduces the vendor's values: with a VCO between 1000 and 2100
+MHz and m up to the width of its register field, p 3, m 113, s 0 falls
+below the minimum and the search returns p 3, m 226, s 1. The M field is
+ten bits wide (PLL_EN is bit 23, P starts at bit 13, M at bit 3), so 226
+fits.
+
+The panel has been coming back from a short screen off with horizontal
+stripes at line pitch on about one wake-up in fifty, with the init
+sequence now byte identical to the vendor table and the same power
+sequencing; the clock the whole link is built on is the part that had
+not been checked.
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index 32c047e967..1af93c855c 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -626,7 +626,7 @@ static const struct samsung_dsim_driver_data exynos7870_dsi_driver_data = {
+ 	.clklane_stop_only = 1,
+ 	.clk_data = exynos7870_clk_bulk_data,
+ 	.num_clks = ARRAY_SIZE(exynos7870_clk_bulk_data),
+-	.max_freq = 1500,
++	.max_freq = 2100,
+ 	.wait_for_hdr_fifo = 1,
+ 	.hdr_fifo_empty_bit = 10,
+ 	.hdr_fifo_full_bit = 11,
+@@ -647,8 +647,8 @@ static const struct samsung_dsim_driver_data exynos7870_dsi_driver_data = {
+ 	.pll_fin_min = 6,
+ 	.pll_fin_max = 12,
+ 	.m_min = 41,
+-	.m_max = 125,
+-	.min_freq = 500,
++	.m_max = 1023,
++	.min_freq = 1000,
+ };
+ 
+ static const struct samsung_dsim_driver_data imx8mm_dsi_driver_data = {
+-- 
+2.47.3
+

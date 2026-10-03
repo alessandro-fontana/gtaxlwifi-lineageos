@@ -1,0 +1,36 @@
+From c7a0aeee930e53a3b35338a5178903ceea8a047c Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 12:50:23 +0200
+Subject: [PATCH] components: encoder input usage includes CPU_READ
+
+RGB input from GL is converted to NV12 by FormatConverter on the CPU.
+On SoCs without cache-coherent GPU buffers, only buffers allocated for
+CPU reads come from cached memory, and reading write-combined memory
+makes the conversion several times slower.
+
+Change-Id: I42d3fed0b1d035f42d1fc8d6834b309da26eae3b
+---
+ components/EncodeInterface.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index 12152e6..bb229c8 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -314,9 +314,12 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                     .withConstValue(new C2StreamBufferTypeSetting::input(0u, C2BufferData::GRAPHIC))
+                     .build());
+ 
++    // CPU_READ: RGB input from GL goes through FormatConverter on the CPU, and on
++    // non-coherent SoCs only buffers allocated for CPU reads are cached.
+     addParameter(DefineParam(mInputMemoryUsage, C2_PARAMKEY_INPUT_STREAM_USAGE)
+                          .withConstValue(new C2StreamUsageTuning::input(
+-                                 0u, static_cast<uint64_t>(BufferUsage::VIDEO_ENCODER)))
++                                 0u, C2MemoryUsage::CPU_READ |
++                                             static_cast<uint64_t>(BufferUsage::VIDEO_ENCODER)))
+                          .build());
+ 
+     addParameter(
+-- 
+2.47.3
+

@@ -1,0 +1,54 @@
+From 434363fa428fe01054a449e9dccc3dd6f6d11ef4 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 9 Sep 2026 17:12:19 +0000
+Subject: [PATCH] drm: bridge: samsung-dsim: give the PLL lock poll real time,
+ and report it
+
+The PLL_STABLE poll is 3000 back-to-back readl() with no delay, a few
+hundred microseconds at most. PLLTMR, the lock time the hardware waits
+before it raises the bit, is 80000 reference cycles on exynos7870, about
+3 ms at 26 MHz. The poll only succeeded when the PLL happened to be
+faster than its own timer; on gtaxlwifi after a cold display on it was
+not, 7 times out of 21, each costing a 100 ms panel retry.
+
+Sleep 10-20 us between polls (30-60 ms total) and say how many polls the
+lock took, so the number is on record.
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index 8c0978a254..984e26169b 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -859,6 +859,13 @@ static unsigned long samsung_dsim_set_pll(struct samsung_dsim *dsi,
+ 
+ 	samsung_dsim_write(dsi, DSIM_PLLCTRL_REG, reg);
+ 
++	/*
++	 * PLLTMR is the lock time the hardware itself waits for before it
++	 * raises PLL_STABLE: 80000 cycles of the 26 MHz reference on
++	 * exynos7870, about 3 ms. A tight readl loop is over in a fraction
++	 * of that and only ever succeeded because the PLL was usually
++	 * quicker than the timer. Poll with real time in between.
++	 */
+ 	timeout = 3000;
+ 	do {
+ 		if (timeout-- == 0) {
+@@ -872,7 +879,12 @@ static unsigned long samsung_dsim_set_pll(struct samsung_dsim *dsi,
+ 			reg = samsung_dsim_read(dsi, DSIM_STATUS_REG);
+ 		else
+ 			reg = samsung_dsim_read(dsi, DSIM_LINK_STATUS_REG);
+-	} while ((reg & BIT(driver_data->pll_stable_bit)) == 0);
++		if (reg & BIT(driver_data->pll_stable_bit))
++			break;
++		usleep_range(10, 20);
++	} while (1);
++
++	dev_info(dsi->dev, "PLL locked after %d polls\n", 3000 - timeout);
+ 
+ 	dsi->hs_clock = fout;
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,77 @@
+From e2ee49e24d9cd2ad18d8547b3cae1c32735abe22 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:00:01 +0200
+Subject: [PATCH] media: exynos7870-csis: signal the frame start as
+ V4L2_EVENT_FRAME_SYNC
+
+Userspace applies the sensor exposure and gain at frame boundaries,
+and needs to know which values each frame was taken with. The CSIS
+already sees the frame start on the link: queue a frame sync event on
+the video node, with the sequence number the frame's buffer will
+carry.
+
+---
+ .../samsung/exynos7870-csis/exynos7870-csis.c | 25 ++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c b/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
+index 455d4053dc..a3c5ebeeb9 100644
+--- a/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
++++ b/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
+@@ -39,6 +39,7 @@
+ #include <media/media-device.h>
+ #include <media/v4l2-async.h>
+ #include <media/v4l2-device.h>
++#include <media/v4l2-event.h>
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-ioctl.h>
+ #include <media/v4l2-mc.h>
+@@ -272,8 +273,19 @@ static irqreturn_t csis_irq(int irq, void *data)
+ 	}
+ 
+ 	/* Frames seen on the link, captured or not. */
+-	if (src0 & CSIS_INT0_FRAMESTART_CH0)
++	if (src0 & CSIS_INT0_FRAMESTART_CH0) {
++		struct v4l2_event ev = {
++			.type = V4L2_EVENT_FRAME_SYNC,
++		};
++
+ 		csis->sequence++;
++		/*
++		 * The sequence the buffer of this frame will carry: the
++		 * sensor controls are applied at frame boundaries against it.
++		 */
++		ev.u.frame_sync.frame_sequence = csis->sequence;
++		v4l2_event_queue(&csis->vdev, &ev);
++	}
+ 
+ 	/* For the DMA engine, the end of frame N precedes the start of N+1. */
+ 	if (src1 & CSIS_INT1_DMA_FRM_END_CH0) {
+@@ -658,6 +670,15 @@ static int csis_enum_framesizes(struct file *file, void *priv,
+ 	return 0;
+ }
+ 
++static int csis_subscribe_event(struct v4l2_fh *fh,
++				const struct v4l2_event_subscription *sub)
++{
++	if (sub->type != V4L2_EVENT_FRAME_SYNC || sub->id != 0)
++		return -EINVAL;
++
++	return v4l2_event_subscribe(fh, sub, 2, NULL);
++}
++
+ static const struct v4l2_ioctl_ops csis_ioctl_ops = {
+ 	.vidioc_querycap = csis_querycap,
+ 	.vidioc_enum_fmt_vid_cap = csis_enum_fmt,
+@@ -674,6 +695,8 @@ static const struct v4l2_ioctl_ops csis_ioctl_ops = {
+ 	.vidioc_expbuf = vb2_ioctl_expbuf,
+ 	.vidioc_streamon = vb2_ioctl_streamon,
+ 	.vidioc_streamoff = vb2_ioctl_streamoff,
++	.vidioc_subscribe_event = csis_subscribe_event,
++	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+ };
+ 
+ static const struct v4l2_file_operations csis_fops = {
+-- 
+2.47.3
+

@@ -1,0 +1,84 @@
+From 1f6cf21821eef9502c2005f00f3c4b39b70e2f7a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 10:00:00 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: allow skipping individual GOA mux
+ entries
+
+Negative values in the GOA mux tables mean "do not write this
+register". Skip them instead of writing them out.
+
+Folds the follow-up fix: the comparison against GENMASK (an unsigned
+long) promoted the negative entries and defeated the check; compare
+against the signed value instead.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 24 ++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 1005138215..44a4ffa48e 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -134,10 +134,13 @@ struct hx8279_panel_mode {
+  * struct hx8279_goa_mux - Gate driver On Array Muxer
+  * @gout_l: Mux GOA signal to GOUT Left pin
+  * @gout_r: Mux GOA signal to GOUT Right pin
++ *
++ * A negative value means that the relative register is left at its
++ * reset value instead of being programmed.
+  */
+ struct hx8279_goa_mux {
+-	u8 gout_l[20];
+-	u8 gout_r[20];
++	s16 gout_l[20];
++	s16 gout_r[20];
+ };
+ 
+ /**
+@@ -312,6 +315,9 @@ static void hx8279_set_gmux(struct hx8279 *hx,
+ 	hx8279_set_page(hx, dsi_ctx, 1);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(gmux->gout_l); i++) {
++		if (gmux->gout_l[i] < 0)
++			continue;
++
+ 		cmd_set_gmux[0] = HX8279_P1_REG_GOUTL(i);
+ 		cmd_set_gmux[1] = gmux->gout_l[i];
+ 		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_gmux,
+@@ -319,6 +325,9 @@ static void hx8279_set_gmux(struct hx8279 *hx,
+ 	}
+ 
+ 	for (i = 0; i < ARRAY_SIZE(gmux->gout_r); i++) {
++		if (gmux->gout_r[i] < 0)
++			continue;
++
+ 		cmd_set_gmux[0] = HX8279_P1_REG_GOUTR(i);
+ 		cmd_set_gmux[1] = gmux->gout_r[i];
+ 		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_gmux,
+@@ -797,13 +806,24 @@ static int hx8279_check_gmux_config(struct hx8279 *hx, struct device *dev)
+ 	if (!gmux)
+ 		return 0;
+ 
++	/*
++	 * A negative entry means "leave the register alone". Check for it
++	 * before the range test: GENMASK() is unsigned long, so a signed
++	 * negative value would be promoted and always compare as too big.
++	 */
+ 	for (i = 0; i < ARRAY_SIZE(gmux->gout_l); i++) {
++		if (gmux->gout_l[i] < 0)
++			continue;
++
+ 		if (gmux->gout_l[i] > (HX8279_GOUT_STB | HX8279_GOUT_SEL))
+ 			return dev_err_probe(dev, -EINVAL,
+ 					     "Invalid value found in gout_l[%d]\n", i);
+ 	}
+ 
+ 	for (i = 0; i < ARRAY_SIZE(gmux->gout_r); i++) {
++		if (gmux->gout_r[i] < 0)
++			continue;
++
+ 		if (gmux->gout_r[i] > (HX8279_GOUT_STB | HX8279_GOUT_SEL))
+ 			return dev_err_probe(dev, -EINVAL,
+ 					     "Invalid value found in gout_r[%d]\n", i);
+-- 
+2.47.3
+

@@ -1,0 +1,63 @@
+From 1531c59e78a16d7c6e5bbdeeabcc4bddf974cca6 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 12:47:10 +0200
+Subject: [PATCH] media: s5p-mfc: a 16 MiB context pool on MFC v10 behind an
+ IOMMU
+
+Each H.264 or HEVC decoder takes a 2 MiB context from the pool that
+also holds the firmware. With 8 MiB only three decoders fit, and the
+fourth fails in VIDIOC_REQBUFS with -ENOMEM ("Failed to allocate
+instance buffer"), while Android's codec list advertises four
+instances: a gallery that keeps the neighbouring pages' players open
+and a thumbnail extractor are enough to reach it.
+
+Use 16 MiB, which hold seven decoders, and allocate the pool under
+32 MiB of IOVA instead of 16 MiB so that it fits.
+
+Tested on Exynos7870 (MFC 0xa0b0): with eight contexts (next patch),
+seven HEVC decoders open at once and the eighth fails in REQBUFS; four
+decoders and four encoders open together.
+
+---
+ drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 95547e66fe..1e3ed3d410 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -1292,6 +1292,15 @@ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ 	if (IS_ENABLED(CONFIG_DMA_CMA) || exynos_is_iommu_available(dev))
+ 		mem_size = SZ_8M;
+ 
++	/*
++	 * Every H.264 or HEVC decoder takes a 2 MiB context from this pool:
++	 * 8 MiB, less the firmware, hold three, and the fourth fails in
++	 * REQBUFS while the codec list advertises four instances. 16 MiB
++	 * hold seven.
++	 */
++	if (mfc_dev->variant->v10x_quirks && exynos_is_iommu_available(dev))
++		mem_size = SZ_16M;
++
+ 	if (mfc_mem_size)
+ 		mem_size = memparse(mfc_mem_size, NULL);
+ 
+@@ -1303,11 +1312,12 @@ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ 	 * The firmware addresses memory as offsets from its base: every
+ 	 * buffer must lie above it. The IOMMU DMA allocator hands out
+ 	 * addresses top down, so the firmware, allocated first, would end
+-	 * up above everything else. Allocate it under 16 MiB, then keep the
+-	 * video buffers within 256 MiB, above it.
++	 * up above everything else. Allocate it under 32 MiB, right above
++	 * the 16 MiB the device tree reserves, then keep the video buffers
++	 * within 256 MiB, above it.
+ 	 */
+ 	if (mfc_dev->variant->v10x_quirks && exynos_is_iommu_available(dev))
+-		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(24));
++		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(25));
+ 
+ 	mfc_dev->mem_virt = dma_alloc_coherent(dev, mem_size,
+ 					       &mfc_dev->mem_base, GFP_KERNEL);
+-- 
+2.47.3
+

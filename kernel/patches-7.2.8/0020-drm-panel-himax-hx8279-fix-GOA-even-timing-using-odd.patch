@@ -1,0 +1,34 @@
+From 2851f358353a138eafce793e7cd8dacf0cfc4309 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 14:37:49 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: fix GOA even timing using odd values
+
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 9e443c7198..db9917c416 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -374,7 +374,7 @@ static void hx8279_set_goa_timing(struct hx8279 *hx,
+ 
+ 	for (i = 0; i < ARRAY_SIZE(desc->goa_even_timing); i++) {
+ 		cmd_set_goa_t[0] = HX8279_P3_REG_GOA_TE(i);
+-		cmd_set_goa_t[1] = desc->goa_odd_timing[i];
++		cmd_set_goa_t[1] = desc->goa_even_timing[i];
+ 		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_goa_t,
+ 					     ARRAY_SIZE(cmd_set_goa_t));
+ 	}
+@@ -1190,7 +1190,7 @@ static const struct hx8279_panel_desc aoly_sl101pm1794fog_v15 = {
+ 	/* Gate driver On Array (GOA) Mux Config */
+ 	.goa_unk_ba = 0xf0,
+ 	.goa_odd_timing = { 0, 0, 0, 42, 0, 0 },
+-	.goa_even_timing = { 1, 42, 0, 0 },
++	.goa_even_timing = { 1, 42, 0, 0, 0, 0 },
+ 	.goa_stv_lead_time_ck = 11,
+ 	.goa_ckv_lead_time_ck = 7,
+ 	.goa_ckv_dummy_vblank_num = 3,
+-- 
+2.47.3
+

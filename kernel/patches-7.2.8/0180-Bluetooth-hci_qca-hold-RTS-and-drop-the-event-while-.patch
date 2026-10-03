@@ -1,0 +1,73 @@
+From 6210d27abf033b9adba4a2743d9d294c2a2d48fe Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 30 Sep 2026 09:24:13 +0200
+Subject: [PATCH] Bluetooth: hci_qca: hold RTS and drop the event while
+ changing ROME's speed
+
+ROME answers the vendor baudrate command at the new speed. The host
+switches its UART only after a fixed 300 ms, so the answer arrives at
+the wrong speed: framing errors on the UART and "Frame reassembly
+failed (-84)" at every setup, and now and then a controller that stops
+answering ("command tx timeout", then an injected hardware error that
+aborts the Android stack).
+
+Do what the driver already does for WCN3990, which has the same
+behaviour: deassert RTS while both sides change speed, so the answer
+stays in the controller, and drop it when it arrives. Holding RTS
+alone is not enough: the late event is then taken as the answer to the
+next vendor command ("QCA Version size mismatch").
+
+Measured on an SM-T580 (QCA9377, ROME 0x00230302) over 30 Bluetooth
+off/on cycles each: UART framing errors from 29 to 0, reassembly
+failures from 60 to 30 (the one left comes at the end of the rampatch
+download, not at the speed change), 30/30 enabled in both cases.
+
+---
+ drivers/bluetooth/hci_qca.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index d640e500e8..9b851f7874 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -1502,9 +1502,12 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
+ 			return 0;
+ 
+ 		/* Disable flow control for wcn3990 to deassert RTS while
+-		 * changing the baudrate of chip and host.
++		 * changing the baudrate of chip and host. ROME answers the
++		 * command at the new speed while the host is still at the
++		 * old one: holding RTS keeps that answer in the chip.
+ 		 */
+ 		switch (soc_type) {
++		case QCA_ROME:
+ 		case QCA_WCN3950:
+ 		case QCA_WCN3988:
+ 		case QCA_WCN3990:
+@@ -1521,6 +1524,7 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
+ 		}
+ 
+ 		switch (soc_type) {
++		case QCA_ROME:
+ 		case QCA_WCN3990:
+ 			reinit_completion(&qca->drop_ev_comp);
+ 			set_bit(QCA_DROP_VENDOR_EVENT, &qca->flags);
+@@ -1540,6 +1544,7 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
+ 
+ error:
+ 		switch (soc_type) {
++		case QCA_ROME:
+ 		case QCA_WCN3950:
+ 		case QCA_WCN3988:
+ 		case QCA_WCN3990:
+@@ -1556,6 +1561,7 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
+ 		}
+ 
+ 		switch (soc_type) {
++		case QCA_ROME:
+ 		case QCA_WCN3990:
+ 			/* Wait for the controller to send the vendor event
+ 			 * for the baudrate change command.
+-- 
+2.47.3
+

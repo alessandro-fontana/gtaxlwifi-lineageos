@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    SPDX-FileCopyrightText: 2026 The LineageOS Project
+    SPDX-License-Identifier: Apache-2.0
+-->
+<resources>
+    <!-- PNO with the screen off (§68.21). Without it, WificondScannerImpl
+         answers "not supported" and a network lost with the screen off is
+         found again only by the watchdog, roughly every 20 minutes. ath10k
+         does the scheduled scan with the firmware NLO since kernel patch
+         0174. Stock did not have it (gPNOScanSupport=0). -->
+    <bool name="config_wifi_background_scan_support">true</bool>
+</resources>

@@ -1,0 +1,50 @@
+From a2ac97efa45ce86936f0242537bf5363185fbeeb Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 2 Oct 2026 15:38:14 +0200
+Subject: [PATCH] arm64: dts: exynos7870-gtaxlwifi: keep LDO31 on for the GPS
+
+LDO31 at 2.8 V supplies the BCM4752 GPS, and no driver asks for it. The
+vendor kernel describes it boot-on and always-on, and so did the U-Boot
+this tablet booted with, which turned it on; S-BOOT leaves it off. Since
+U-Boot gave way to a loader that does not touch the PMIC, the chip never
+answered on its UART ("ASIC communication failure during stage HAL
+init"), and the regulator could not be turned on by Linux either, being
+undescribed.
+
+Describe it as the vendor does. Tested on the tablet: the UART receives
+again, and outdoors the first fix comes after 95.6 s cold, 9 of 11
+satellites used, 12 m accuracy.
+
+---
+ .../boot/dts/exynos/exynos7870-gtaxlwifi.dts      | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+index b926a0f1d7..f1c6e73e16 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+@@ -1275,6 +1275,21 @@ vdd_ldo34: ldo34 {
+ 				regulator-max-microvolt = <1800000>;
+ 			};
+ 
++			/*
++			 * LDO31 at 2.8 V supplies the BCM4752 GPS. No driver asks
++			 * for it: the vendor kernel and the U-Boot this tablet
++			 * booted with both keep it on (boot-on, always-on), and
++			 * S-BOOT leaves it off. Without it the chip never answers
++			 * on its UART.
++			 */
++			vdd_ldo31: ldo31 {
++				regulator-name = "vdd_ldo31";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
+ 			vdd_ldo33: ldo33 {
+ 				regulator-name = "vdd_ldo33";
+ 				regulator-min-microvolt = <2800000>;
+-- 
+2.47.3
+

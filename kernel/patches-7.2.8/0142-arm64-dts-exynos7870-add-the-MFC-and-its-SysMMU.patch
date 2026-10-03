@@ -1,0 +1,74 @@
+From dc7ae7dc6d8f3e1a03406e6064080c89ac7b5583 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 20:55:33 +0200
+Subject: [PATCH] arm64: dts: exynos7870: add the MFC and its SysMMU
+
+With the IOVA reservation below the firmware that the MFC needs; its
+power domain, MFCMSCL, is left on by the bootloader.
+
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 41 ++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index 9752662c28..caa2a9e352 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -233,6 +233,22 @@ map3 {
+ 		};
+ 	};
+ 
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <1>;
++		ranges;
++
++		/*
++		 * IOVA space only, no memory: the MFC firmware addresses its
++		 * buffers as offsets from its base, so nothing may be mapped
++		 * below it. Reserving the bottom of the MFC's IOVA space puts
++		 * the firmware right above it and every later buffer higher.
++		 */
++		mfc_iova: mfc-iova {
++			iommu-addresses = <&mfc 0x0 0x800000>;
++		};
++	};
++
+ 	soc: soc@0 {
+ 		compatible = "simple-bus";
+ 		ranges = <0x0 0x0 0x0 0x20000000>;
+@@ -434,6 +450,31 @@ cmu_mfcmscl: clock-controller@12cb0000 {
+ 				 <&cmu_mif CLK_GOUT_MIF_CMU_MFCMSCL_MFC>,
+ 				 <&cmu_mif CLK_GOUT_MIF_CMU_MFCMSCL_MSCL>;
+ 		};
++		/*
++		 * Multi Format Codec, v10 (downstream ip_ver IP_VER_MFC_7J_0,
++		 * version 0xa0b0). Its power domain, MFCMSCL, is left on by the
++		 * bootloader.
++		 */
++		mfc: codec@12c30000 {
++			compatible = "samsung,exynos7870-mfc";
++			reg = <0x12c30000 0x10000>;
++			interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cmu_mfcmscl CLK_GOUT_MFCMSCL_MFC>;
++			clock-names = "mfc";
++			iommus = <&sysmmu_mfc>;
++			memory-region = <&mfc_iova>;
++		};
++
++		sysmmu_mfc: iommu@12c90000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x12c90000 0x1000>;
++			interrupts = <GIC_SPI 352 IRQ_TYPE_LEVEL_HIGH>;
++			#iommu-cells = <0>;
++
++			clocks = <&cmu_mfcmscl CLK_GOUT_MFCMSCL_MFC>;
++			clock-names = "sysmmu";
++		};
++
+ 
+ 		mmc0: mmc@13540000 {
+ 			compatible = "samsung,exynos7870-dw-mshc-smu";
+-- 
+2.47.3
+

@@ -1,0 +1,224 @@
+From 938b4655a398440ca6cdfad030fc02b0be865695 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 13:45:05 +0200
+Subject: [PATCH] media: s5p-mfc: take a new set of CAPTURE buffers while
+ decoding
+
+A stateful client can replace the CAPTURE buffers of a running decoder:
+Android's v4l2_codec2 does when a player moves the decoder to another
+surface, since the pictures queued to the old one never come back. The
+MFC keeps the DPB it was given at INIT_BUFFERS, so after STREAMOFF,
+REQBUFS(0) and a new REQBUFS the decoder went on writing to the old
+addresses, and the new buffers were never used.
+
+On REQBUFS(0) while running, go back to setting up the DPB. The MFC
+takes a second INIT_BUFFERS only after a new SEQ_START (INIT_BUFFERS
+alone fails with error 0xd), and the client does not send the header
+again: keep a copy of the first OUTPUT buffer, the header, and parse it
+again from a buffer of our own before setting up the new DPB, without
+signalling a source change for what is the same stream.
+dpb_flush_flag keeps the first OUTPUT buffer, a picture after the
+reset, from being completed by the buffer setup.
+
+Tested on Exynos7870 (MFC 0xa0b0) with v4l2_codec2 moving an HEVC
+decoder between the surfaces of a gallery: playback resumes on the new
+surface at the right rate, seeks and the eight instances are unchanged.
+
+---
+ .../media/platform/samsung/s5p-mfc/s5p_mfc.c  | 20 ++++++-
+ .../platform/samsung/s5p-mfc/s5p_mfc_common.h | 10 ++++
+ .../platform/samsung/s5p-mfc/s5p_mfc_dec.c    | 58 +++++++++++++++++++
+ .../platform/samsung/s5p-mfc/s5p_mfc_dec.h    |  1 +
+ .../platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c |  8 +++
+ 5 files changed, 96 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 1e3ed3d410..a9e48e559e 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -543,6 +543,7 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 				 unsigned int reason, unsigned int err)
+ {
+ 	struct s5p_mfc_dev *dev;
++	bool reparsed = false;
+ 
+ 	if (!ctx)
+ 		return;
+@@ -578,7 +579,16 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 			ctx->state = MFCINST_HEAD_PARSED;
+ 			dev_dbg(&dev->plat_dev->dev, "header: %ux%u, DPB %d\n",
+ 				ctx->img_width, ctx->img_height, ctx->pb_count);
+-			v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
++			/*
++			 * A header parsed again for a new DPB is the same
++			 * stream: the client already has its buffers.
++			 */
++			if (ctx->reparse) {
++				ctx->reparse = false;
++				reparsed = true;
++			} else {
++				v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
++			}
+ 		}
+ 
+ 		if ((ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
+@@ -607,6 +617,10 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 	}
+ 	s5p_mfc_hw_call(dev->mfc_ops, clear_int_flags, dev);
+ 	clear_work_bit(ctx);
++	/* A new DPB for the same stream: set it up right away. */
++	if (reparsed && ctx->capture_state == QUEUE_BUFS_MMAPED &&
++	    ctx->src_queue_cnt >= 1)
++		set_work_bit(ctx);
+ 	/* The encoder goes on with the frames already queued. */
+ 	if (ctx->type == MFCINST_ENCODER &&
+ 	    ctx->state == MFCINST_HEAD_PRODUCED &&
+@@ -1078,6 +1092,10 @@ static int s5p_mfc_release(struct file *file)
+ 	}
+ 	if (dev)
+ 		dev->ctx[ctx->num] = NULL;
++	if (dev && ctx->type == MFCINST_DECODER)
++		s5p_mfc_dec_drop_header(ctx);
++	else
++		kfree(ctx->hdr);
+ 	s5p_mfc_dec_ctrls_delete(ctx);
+ 	v4l2_fh_del(&ctx->fh, file);
+ 	/* vdev is gone if dev is null */
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+index 84aa14d067..22e90a03ff 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+@@ -677,6 +677,16 @@ struct s5p_mfc_ctx {
+ 
+ 	unsigned int dpb_flush_flag;
+ 	unsigned int head_processed;
++	/*
++	 * Decoder: copy of the stream header, to parse it again when the
++	 * client replaces the CAPTURE buffers while decoding (see
++	 * reqbufs_capture()); hdr_buf is the stream buffer the MFC reads
++	 * it from, reparse the pending SEQ_START.
++	 */
++	void *hdr;
++	unsigned int hdr_len;
++	struct s5p_mfc_priv_buf hdr_buf;
++	bool reparse;
+ 
+ 	struct s5p_mfc_priv_buf bank1;
+ 	struct s5p_mfc_priv_buf bank2;
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+index d58bd002d8..df071c5957 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+@@ -273,6 +273,19 @@ static struct mfc_control controls[] = {
+ 
+ #define NUM_CTRLS ARRAY_SIZE(controls)
+ 
++/* Largest stream header kept for a second SEQ_START (see reqbufs_capture()). */
++#define MFC_DEC_HDR_MAX		SZ_64K
++
++void s5p_mfc_dec_drop_header(struct s5p_mfc_ctx *ctx)
++{
++	if (ctx->hdr_buf.virt)
++		s5p_mfc_release_generic_buf(ctx->dev, &ctx->hdr_buf);
++	kfree(ctx->hdr);
++	ctx->hdr = NULL;
++	ctx->hdr_len = 0;
++	ctx->reparse = false;
++}
++
+ /* Check whether a context should be run on hardware */
+ static int s5p_mfc_ctx_ready(struct s5p_mfc_ctx *ctx)
+ {
+@@ -638,6 +651,39 @@ static int reqbufs_capture(struct s5p_mfc_dev *dev, struct s5p_mfc_ctx *ctx,
+ 		ctx->dst_bufs_cnt = 0;
+ 		ctx->dst_placeholder = false;
+ 		ctx->capture_state = QUEUE_FREE;
++		/*
++		 * A new set of CAPTURE buffers while decoding, e.g. when the
++		 * client moves to another surface and the pictures of the old
++		 * one never come back: go back to setting up the DPB, so that
++		 * the MFC gets the new addresses once they are all queued.
++		 * The DPB was flushed by the streamoff, and dpb_flush_flag
++		 * keeps the first OUTPUT buffer, a picture and not the
++		 * header, from being dropped by the buffer setup.
++		 */
++		if (ctx->state == MFCINST_RUNNING) {
++			/*
++			 * The MFC only takes a new DPB after a new SEQ_START
++			 * (INIT_BUFFERS alone fails with error 0xd), and the
++			 * client does not send the header again: parse the
++			 * copy kept from the first one.
++			 */
++			if (ctx->hdr_buf.virt)
++				s5p_mfc_release_generic_buf(dev, &ctx->hdr_buf);
++			ctx->reparse = false;
++			if (ctx->hdr) {
++				ctx->hdr_buf.size = ALIGN(ctx->dec_src_buf_size, 512);
++				if (!s5p_mfc_alloc_generic_buf(dev, BANK_L_CTX,
++							       &ctx->hdr_buf)) {
++					memcpy(ctx->hdr_buf.virt, ctx->hdr,
++					       ctx->hdr_len);
++					ctx->reparse = true;
++				}
++			}
++			if (!ctx->reparse)
++				mfc_err("No stream header to set up a new DPB\n");
++			ctx->state = MFCINST_HEAD_PARSED;
++			ctx->dpb_flush_flag = 1;
++		}
+ 	} else if (ctx->capture_state == QUEUE_FREE &&
+ 		   ctx->state < MFCINST_HEAD_PARSED) {
+ 		/*
+@@ -1345,6 +1391,18 @@ static void s5p_mfc_buf_queue(struct vb2_buffer *vb)
+ 	struct s5p_mfc_buf *mfc_buf;
+ 
+ 	if (vq->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
++		/* The first buffer is the header: keep it, see reqbufs_capture(). */
++		if (ctx->state == MFCINST_GOT_INST && !ctx->hdr) {
++			void *vaddr = vb2_plane_vaddr(vb, 0);
++			unsigned int len = min_t(unsigned int, MFC_DEC_HDR_MAX,
++					vb2_get_plane_payload(vb, 0));
++
++			if (vaddr && len) {
++				ctx->hdr = kmemdup(vaddr, len, GFP_KERNEL);
++				if (ctx->hdr)
++					ctx->hdr_len = len;
++			}
++		}
+ 		mfc_buf = &ctx->src_bufs[vb->index];
+ 		mfc_buf->flags &= ~MFC_BUF_FLAG_USED;
+ 		spin_lock_irqsave(&dev->irqlock, flags);
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.h b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.h
+index 47a6eb9a8f..e2e4a981a1 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.h
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.h
+@@ -14,6 +14,7 @@ const struct vb2_ops *get_dec_queue_ops(void);
+ const struct v4l2_ioctl_ops *get_dec_v4l2_ioctl_ops(void);
+ int s5p_mfc_dec_ctrls_setup(struct s5p_mfc_ctx *ctx);
+ void s5p_mfc_dec_ctrls_delete(struct s5p_mfc_ctx *ctx);
++void s5p_mfc_dec_drop_header(struct s5p_mfc_ctx *ctx);
+ void s5p_mfc_dec_init(struct s5p_mfc_ctx *ctx);
+ 
+ #endif /* S5P_MFC_DEC_H_ */
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+index 913c507dfe..0af09523e0 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+@@ -2278,6 +2278,14 @@ static void s5p_mfc_try_run_v6(struct s5p_mfc_dev *dev)
+ 			s5p_mfc_run_init_dec(ctx);
+ 			break;
+ 		case MFCINST_HEAD_PARSED:
++			if (ctx->reparse) {
++				/* New DPB while decoding: parse the header again. */
++				s5p_mfc_set_dec_stream_buffer_v6(ctx,
++						ctx->hdr_buf.dma, 0, ctx->hdr_len);
++				dev->curr_ctx = ctx->num;
++				s5p_mfc_init_decode_v6(ctx);
++				break;
++			}
+ 			ret = s5p_mfc_run_init_dec_buffers(ctx);
+ 			break;
+ 		case MFCINST_FLUSH:
+-- 
+2.47.3
+

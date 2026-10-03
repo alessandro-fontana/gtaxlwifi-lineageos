@@ -1,0 +1,44 @@
+diff --git a/libraries/libinit/libinit_set_properties.cpp b/libraries/libinit/libinit_set_properties.cpp
+index c681a34..c92b01f 100644
+--- a/libraries/libinit/libinit_set_properties.cpp
++++ b/libraries/libinit/libinit_set_properties.cpp
+@@ -27,7 +27,39 @@ static const std::unordered_map<std::string, std::string> kDmiIdToRoBuildPropMap
+         {"sys_vendor", "manufacturer"},
+ };
+ 
++/*
++ * ro.soc.manufacturer and ro.soc.model are mandatory since the Android 12 CDD
++ * and stay empty on generic mainline. The device tree already holds them: by
++ * convention the last entry of `compatible` is the SoC — here
++ * "samsung,gtaxlwifi", "samsung,exynos7870" — and the two halves before and
++ * after the comma are the manufacturer and the model. They are read as they
++ * are, without prettifying them: the value must stay what the device tree
++ * declares. (gtaxlwifi, §47)
++ */
++static void set_soc_properties_from_devicetree() {
++    std::string dt_compatible;
++    ReadFileToString(kDeviceTreePath + "compatible", &dt_compatible);
++    if (dt_compatible.empty()) return;
++
++    // NUL-separated list of strings: keep the last non-empty one.
++    std::string soc;
++    for (size_t pos = 0; pos < dt_compatible.size();) {
++        auto end = dt_compatible.find('\0', pos);
++        if (end == std::string::npos) end = dt_compatible.size();
++        if (end > pos) soc = dt_compatible.substr(pos, end - pos);
++        pos = end + 1;
++    }
++
++    auto comma = soc.find_first_of(',');
++    if (comma == std::string::npos) return;
++
++    property_override("ro.soc.manufacturer", soc.substr(0, comma), true);
++    property_override("ro.soc.model", soc.substr(comma + 1), true);
++}
++
+ void set_properties_from_devicetree() {
++    set_soc_properties_from_devicetree();
++
+     std::string dt_model;
+     ReadFileToString(kDeviceTreePath + "model", &dt_model);
+     if (dt_model.empty()) return;

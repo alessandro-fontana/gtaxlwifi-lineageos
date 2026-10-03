@@ -1,0 +1,151 @@
+diff --git a/drm/DrmDevice.cpp b/drm/DrmDevice.cpp
+index be55592..aa9be07 100644
+--- a/drm/DrmDevice.cpp
++++ b/drm/DrmDevice.cpp
+@@ -25,6 +25,7 @@
+ 
+ #include <cinttypes>
+ #include <cstdint>
++#include <set>
+ #include <string>
+ 
+ #include "bufferinfo/BufferInfo.h"
+@@ -349,13 +350,49 @@ auto DrmDevice::ResetConnectorsAndCrtcs() -> void {
+     ALOGE("Failed to allocate property set");
+     return;
+   }
++
++  /*
++   * gtaxlwifi: do not reset a CRTC that is already active.
++   *
++   * This cleanup is meant to start from a known state, that is to release
++   * configurations left behind by a previous instance. But it also turns off
++   * a display that is already working: on this tablet the bootloader leaves
++   * the panel on and a splash in the ramdisk draws an animation on it long
++   * before SurfaceFlinger exists. Resetting everything means turning the
++   * panel off and on again right during the handover, and it shows.
++   *
++   * An active CRTC is left alone, together with the connector attached to
++   * it: the hwcomposer will find it exactly as it is and can inherit it.
++   * Everything else is cleaned up as before, and if there is nothing to
++   * clean up no commit is made at all.
++   */
++  std::set<uint32_t> active_crtcs;
++  for (const auto &crtc : crtcs_) {
++    if (crtc->GetActiveProperty().GetValue().value_or(0) != 0) {
++      active_crtcs.emplace(crtc->GetId());
++    }
++  }
++
++  bool anything_to_reset = false;
++
+   for (const auto &conn : connectors_) {
++    const auto attached_to = conn->GetCrtcIdProperty().GetValue().value_or(0);
++    if (attached_to != 0 &&
++        active_crtcs.count(static_cast<uint32_t>(attached_to)) != 0) {
++      continue;
++    }
+     if (!conn->GetCrtcIdProperty().AtomicSet(*pset.get(), 0)) {
+       ALOGE("Failed to Set Crtc Id Prop to Null for Conn = %d", conn->GetId());
+       return;
+     }
++    anything_to_reset = true;
+   }
++
+   for (const auto &crtc : crtcs_) {
++    if (active_crtcs.count(crtc->GetId()) != 0) {
++      ALOGI("Inheriting active CRTC %d instead of resetting it", crtc->GetId());
++      continue;
++    }
+     if (!crtc->GetModeProperty().AtomicSet(*pset.get(), 0) ||
+         !crtc->GetActiveProperty().AtomicSet(*pset.get(), 0)) {
+       ALOGE(
+@@ -364,7 +401,13 @@ auto DrmDevice::ResetConnectorsAndCrtcs() -> void {
+           crtc->GetId());
+       return;
+     }
++    anything_to_reset = true;
+   }
++
++  if (!anything_to_reset) {
++    return;
++  }
++
+   auto err = drmModeAtomicCommit(*GetFd(), pset.get(),
+                                  DRM_MODE_ATOMIC_ALLOW_MODESET, this);
+   if (err != 0) {
+diff --git a/hwc/HwcDisplay.cpp b/hwc/HwcDisplay.cpp
+index e1554a5..d0ee59a 100644
+--- a/hwc/HwcDisplay.cpp
++++ b/hwc/HwcDisplay.cpp
+@@ -656,6 +656,19 @@ bool HwcDisplay::SetDisplayEnabled(bool enabled) {
+     }
+   }
+ 
++  // Before turning the display off, detach the planes, as Deinit() does.
++  // The teardown below only unbinds the connector and the mode: the planes
++  // would keep the last frame, and the next power on would show it until
++  // the first new composition (on a phone or tablet, the content from
++  // before the screen went off instead of the lock screen).
++  if (!enabled) {
++    AtomicCommitArgs blank_args{};
++    blank_args.blocking = true;
++    blank_args.composition = std::make_shared<LayerToPlaneJoiningPlan>();
++    ALOGE_IF(!ExecuteAtomicCommit(blank_args).has_value(),
++             "Failed to detach the planes before disabling the display.");
++  }
++
+   // Set the display active state.
+   AtomicCommitArgs a_args{};
+   a_args.blocking = true;
+@@ -970,12 +983,18 @@ AtomicCommitArgs HwcDisplay::CreateModesetCommit(
+     composition_layers.emplace_back(modeset_layer.value());
+   }
+ 
+-  if (composition_layers.empty()) {
+-    ALOGW("Attempting to create a modeset commit without a layer.");
+-  }
+-
+   args.display_mode = config->mode;
+   args.active = true;
++
++  if (composition_layers.empty()) {
++    /*
++     * gtaxlwifi: no layers means "do not touch the planes". An empty
++     * composition plan would turn them off, and the screen still shows the
++     * image we want to keep (see GetModesetLayerData).
++     */
++    ALOGI("Modeset without layers: leaving the planes as they are");
++    return args;
++  }
+   args.composition = LayerToPlaneJoiningPlan::
+       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers));
+   ALOGW_IF(!args.composition, "No composition for blocking modeset");
+@@ -1459,6 +1478,27 @@ std::optional<LayerData> HwcDisplay::GetModesetLayerData(
+     return client_layer_.GetLayerData();
+   }
+ 
++  /*
++   * gtaxlwifi: if the CRTC is already on, what is on screen was put there by
++   * someone else — here it is the boot splash animation, drawn from the
++   * ramdisk before SurfaceFlinger exists (§43). Allocating a new buffer means
++   * replacing it with black until the first real SurfaceFlinger frame, about
++   * a second later. By returning "no layers" the modeset commit does not
++   * touch the planes and the image stays where it is.
++   */
++  /*
++   * The question must be asked of the KERNEL, not of ourselves:
++   * atomic_commit_sink IsActive() reports the state the hwcomposer *believes*
++   * it has (committed_frame_state_), and at startup that is false because it
++   * has not committed anything yet — even when the CRTC is already scanning
++   * out. The CRTC's ACTIVE property, instead, is read from the kernel.
++   */
++  const auto crtc_active = GetPipe().crtc->Get()->GetActiveProperty().GetValue();
++  if (crtc_active.value_or(0) != 0) {
++    ALOGI("CRTC already active in the kernel: inheriting what is on screen");
++    return {};
++  }
++
+   ALOGV("Allocate modeset buffer.");
+   std::optional<BufferInfo>
+       modeset_buffer = GetPipe().device->CreateBufferForModeset(new_width,

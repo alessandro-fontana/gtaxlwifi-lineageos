@@ -1,0 +1,61 @@
+From 03a4a345aedf4e108807c2cb4ce62b9df39557e7 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 20:20:01 +0200
+Subject: [PATCH] android: stable ids for the internal cameras
+
+The HAL numbered the cameras in the order libcamera reported them, which
+changes across boots: the back camera was 0 or 1 depending on which
+sensor probed first. Give the back camera 0 and the front camera 1 when
+free, else the first free id.
+
+---
+ src/android/camera_hal_manager.cpp | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/android/camera_hal_manager.cpp b/src/android/camera_hal_manager.cpp
+index f1442a00..bc071a23 100644
+--- a/src/android/camera_hal_manager.cpp
++++ b/src/android/camera_hal_manager.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "camera_hal_manager.h"
+ 
++#include <algorithm>
++
+ #include <libcamera/base/log.h>
+ 
+ #include <libcamera/camera.h>
+@@ -175,11 +177,28 @@ void CameraHalManager::cameraAdded(std::shared_ptr<Camera> cam)
+ 		 * Now check if this is an external camera and assign
+ 		 * its id accordingly.
+ 		 */
+-		if (cameraLocation(cam.get()) == properties::CameraLocationExternal) {
++		int32_t location = cameraLocation(cam.get());
++		if (location == properties::CameraLocationExternal) {
+ 			isCameraExternal = true;
+ 			id = nextExternalCameraId_;
+ 		} else {
+-			id = numInternalCameras_;
++			/*
++			 * The enumeration order of the cameras is not stable
++			 * across boots, and Android expects stable ids, the
++			 * back camera being 0 by convention: prefer 0 for the
++			 * back and 1 for the front, else the first free id.
++			 */
++			auto used = [&](unsigned int i) {
++				return std::any_of(cameraIdsMap_.begin(), cameraIdsMap_.end(),
++						   [i](const auto &e) { return e.second == i; });
++			};
++			unsigned int preferred = location == properties::CameraLocationFront ? 1 : 0;
++			id = preferred;
++			if (used(id)) {
++				id = 0;
++				while (used(id))
++					id++;
++			}
+ 		}
+ 	}
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,23 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// GPS test (§54): requests locations from the "gps" provider and logs to
+// logcat (tag GnssScan) satellites, fixes and fix time. It answers three
+// questions: does the framework talk to the HAL? does the chip see
+// satellites? is the fix time right, i.e. does the rollover correction work?
+// Not part of any image: only the intermediate apk is built, and it is
+// installed with adb install.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_app {
+    name: "GnssScan",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    optimize: { enabled: false },
+    dex_preopt: { enabled: false },
+}

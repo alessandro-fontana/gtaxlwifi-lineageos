@@ -1,0 +1,35 @@
+diff --git a/src/org/lineageos/lineageparts/input/ButtonSettings.java b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+index e14655c..7ab10f3 100644
+--- a/src/org/lineageos/lineageparts/input/ButtonSettings.java
++++ b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+@@ -433,11 +433,25 @@ public class ButtonSettings extends SettingsPreferenceFragment
+         }
+ 
+         mSwapCapacitiveKeys = findPreference(KEY_SWAP_CAPACITIVE_KEYS);
+-        if (mSwapCapacitiveKeys != null && !isKeySwapperSupported(getActivity())) {
+-            prefScreen.removePreference(mSwapCapacitiveKeys);
+-        } else {
+-            mSwapCapacitiveKeys.setOnPreferenceChangeListener(this);
+-            mSwapCapacitiveKeys.setDependency(KEY_DISABLE_NAV_KEYS);
++        if (mSwapCapacitiveKeys != null) {
++            if (!isKeySwapperSupported(getActivity())) {
++                prefScreen.removePreference(mSwapCapacitiveKeys);
++            } else {
++                mSwapCapacitiveKeys.setOnPreferenceChangeListener(this);
++                /*
++                 * The key swapper and the key disabler are two independent
++                 * HAL features: a device may well implement one and not the
++                 * other.  When the disabler is missing, disable_nav_keys has
++                 * already been removed from the screen above, and depending
++                 * on a preference that is not on the screen makes
++                 * Preference.registerDependency() throw
++                 * IllegalStateException, taking the whole Buttons screen
++                 * down with it.
++                 */
++                if (isKeyDisablerSupported(getActivity())) {
++                    mSwapCapacitiveKeys.setDependency(KEY_DISABLE_NAV_KEYS);
++                }
++            }
+         }
+ 
+         mEnableTaskbar = findPreference(KEY_ENABLE_TASKBAR);

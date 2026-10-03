@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+/*
+** Copyright 2009, The Android Open Source Project
+**
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** You may obtain a copy of the License at
+**
+**     http://www.apache.org/licenses/LICENSE-2.0
+**
+** Unless required by applicable law or agreed to in writing, software
+** distributed under the License is distributed on an "AS IS" BASIS,
+** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+** See the License for the specific language governing permissions and
+** limitations under the License.
+*/
+-->
+
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <!-- The internal display does not host desktop sessions (§15): the
+         multi-desk backend is not built in this build, and with the desk in
+         single-desk mode every freeform activity killed SystemUI with
+         "Root not found for desk: 0". The generic device says true. -->
+    <bool name="config_canInternalDisplayHostDesktops">false</bool>
+
+    <!-- The magnetic cover (gtaxlwifi, §49). The Hall sensor is declared in
+         the device tree as SW_LID on gpa1-3, and these two lines are what
+         make it useful: closing the cover puts the tablet to sleep, opening
+         it wakes it up. Without config_lidControlsSleep the switch reaches
+         Android and does nothing. -->
+    <bool name="config_lidControlsSleep">true</bool>
+
+    <!-- The screen comes back as it was: the cover does not lock by itself,
+         the lock stays the one chosen in the settings. -->
+    <bool name="config_lidControlsScreenLock">false</bool>
+
+    <!-- Automatic brightness (gtaxlwifi, §49.6).
+
+         WARNING, this is what to know before touching these numbers: the
+         values of config_autoBrightnessLevels are NOT lux. This tablet's
+         CM3323 exposes RGB and clear channels, not an illuminance channel,
+         and the HAL reports to Android the raw COUNT of the clear channel.
+         Calibration against a reference could not be done (§49.5:
+         different fields of view, ratios from 0.21 to 0.93 lux/count), so
+         the curve is written in the quantity the sensor actually produces.
+
+         Points measured in the field, which form the backbone of the curve:
+             ~4 counts     sensor covered
+           ~700            dim room
+           ~950            lit room
+          ~1950            brightly lit room / near the window
+           ~8100            outdoors, shade or overcast sky
+          56135            DIRECT SUN, highest measured (full scale of the
+                           channel at 40 ms integration: close, not saturated)
+         The tail is no longer an extrapolation: the maximum reaches 255
+         above 20000 counts, which is full sun.
+
+         Eight thresholds and nine values, as the binding requires (N and N+1). -->
+    <bool name="config_automatic_brightness_available">true</bool>
+
+    <integer-array name="config_autoBrightnessLevels">
+        <item>10</item>
+        <item>30</item>
+        <item>80</item>
+        <item>200</item>
+        <item>450</item>
+        <item>900</item>
+        <item>1600</item>
+        <item>5000</item>
+        <item>20000</item>
+    </integer-array>
+
+    <integer-array name="config_autoBrightnessLcdBacklightValues">
+        <item>10</item>
+        <item>20</item>
+        <item>35</item>
+        <item>60</item>
+        <item>90</item>
+        <item>130</item>
+        <item>175</item>
+        <item>200</item>
+        <item>235</item>
+        <item>255</item>
+    </integer-array>
+
+    <!-- GPS (gtaxlwifi, §54.7). The BCM4752 starts much faster with
+         Broadcom's long-term assistance data (LTO): libgps asks for it with
+         the XTRA request, the HAL passes that to the framework as PSDS, and
+         the framework downloads the data from here and injects it. These are
+         the servers the LineageOS 21 port used (gps.conf). No SUPL: the
+         tablet has no mobile network, and gps.xml has SuplEnable="false". -->
+    <string-array name="config_gnssParameters" translatable="false">
+        <item>LONGTERM_PSDS_SERVER_1=https://glltos1.glpals.com/7day/v3/latest/lto2.dat</item>
+        <item>LONGTERM_PSDS_SERVER_2=https://glltos2.glpals.com/7day/v3/latest/lto2.dat</item>
+    </string-array>
+</resources>

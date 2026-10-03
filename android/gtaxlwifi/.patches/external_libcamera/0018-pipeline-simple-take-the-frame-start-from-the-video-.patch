@@ -1,0 +1,70 @@
+From 0dc67fa0a76407da2489fc5f0f3ceae1afbd2621 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:00:01 +0200
+Subject: [PATCH] pipeline: simple: take the frame start from the video node
+
+DelayedControls needs frame start events to apply the sensor controls
+at frame boundaries and to know which values each frame was taken
+with. The simple pipeline only looks for them on subdevs; without
+them the controls are written as soon as the IPA asks and the values
+reported for each frame are not the ones the sensor used, which
+breaks the AGC regulation.
+
+Receivers exposed only as a video node, such as the Exynos7870 CSIS,
+can signal V4L2_EVENT_FRAME_SYNC there: use it when no subdev does.
+
+---
+ src/libcamera/pipeline/simple/simple.cpp | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index d4dc9c87..9c4bb0ce 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -329,7 +329,7 @@ public:
+ 	std::list<Entity> entities_;
+ 	std::unique_ptr<CameraSensor> sensor_;
+ 	V4L2VideoDevice *video_;
+-	V4L2Subdevice *frameStartEmitter_;
++	V4L2Device *frameStartEmitter_;
+ 
+ 	std::vector<Configuration> configs_;
+ 	std::map<PixelFormat, std::vector<const Configuration *>> formats_;
+@@ -660,6 +660,16 @@ int SimpleCameraData::init()
+ 		break;
+ 	}
+ 
++	/*
++	 * Receivers without a subdev, such as the Exynos7870 CSIS, may signal
++	 * the frame start on the capture video node.
++	 */
++	if (!frameStartEmitter_ && video_->supportsFrameStartEvent()) {
++		LOG(SimplePipeline, Debug)
++			<< "Using frameStart signal from the video node";
++		frameStartEmitter_ = video_;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1440,7 +1450,7 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
+ {
+ 	SimpleCameraData *data = cameraData(camera);
+ 	V4L2VideoDevice *video = data->video_;
+-	V4L2Subdevice *frameStartEmitter = data->frameStartEmitter_;
++	V4L2Device *frameStartEmitter = data->frameStartEmitter_;
+ 	int ret;
+ 
+ 	const MediaPad *pad = acquirePipeline(data);
+@@ -1512,7 +1522,7 @@ void SimplePipelineHandler::stopDevice(Camera *camera)
+ {
+ 	SimpleCameraData *data = cameraData(camera);
+ 	V4L2VideoDevice *video = data->video_;
+-	V4L2Subdevice *frameStartEmitter = data->frameStartEmitter_;
++	V4L2Device *frameStartEmitter = data->frameStartEmitter_;
+ 
+ 	if (frameStartEmitter) {
+ 		frameStartEmitter->setFrameStartEnabled(false);
+-- 
+2.47.3
+

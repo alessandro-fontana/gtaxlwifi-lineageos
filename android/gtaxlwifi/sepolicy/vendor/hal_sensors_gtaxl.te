@@ -1,0 +1,31 @@
+# The two IIO sensors the kernel exposes (§48).
+#
+#   LIS2HH12  accelerometer  i2c-6 0x1d  -> iio:device3 (+ /dev/iio:device3)
+#   CM3323    RGB light      i2c-6 0x10  -> iio:device2
+#
+# The IIO HAL (hardware/intel/sensors-iio, loaded by the multihal) discovers
+# them by listing /sys/bus/iio/devices and then works on the device's sysfs
+# attributes. AOSP grants hal_sensors_default no access to sysfs, because
+# the reference HAL talks to a sensor hub, not to the kernel: without these
+# lines the HAL starts, finds nothing and SensorService keeps saying
+# "No Sensors on the device" — the difference being that now the denials
+# explain why.
+
+# /sys/bus/iio/devices is generic sysfs: the HAL lists the directory and
+# follows the links to /sys/devices/...
+allow hal_sensors_default sysfs:dir r_dir_perms;
+allow hal_sensors_default sysfs:lnk_file read;
+
+# The attributes of the two devices, labelled in genfs_contexts. Writable,
+# not read-only: the HAL sets sampling_frequency and the calibbias values,
+# and in trigger mode it would also write buffer/length and
+# buffer/enable.
+type sysfs_iio, fs_type, sysfs_type;
+allow hal_sensors_default sysfs_iio:dir r_dir_perms;
+allow hal_sensors_default sysfs_iio:file rw_file_perms;
+
+# The character node. The HAL opens it **also** for polled sensors: that is
+# how it keeps the hardware powered while the sensor is in use (the HAL's
+# README, section "FDs and CHANNELS"). The iio_device label is AOSP's
+# (public/device.te), the access rule is not.
+allow hal_sensors_default iio_device:chr_file rw_file_perms;

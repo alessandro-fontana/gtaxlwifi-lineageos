@@ -1,0 +1,6 @@
+# LineageOS charging control (vendor.lineage.health): writes the
+# charger's charging_enabled (1 / 0) for the charge
+# limit. The domain and types are in device/lineage/sepolicy/common; here
+# only access to the node, which is in sysfs_batteryinfo (genfs_contexts).
+allow hal_lineage_health_default sysfs_batteryinfo:dir r_dir_perms;
+allow hal_lineage_health_default sysfs_batteryinfo:file rw_file_perms;

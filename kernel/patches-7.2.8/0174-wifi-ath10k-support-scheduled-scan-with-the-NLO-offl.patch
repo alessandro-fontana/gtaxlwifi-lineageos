@@ -1,0 +1,153 @@
+From 5ef0f55d2fa28e7da956b4f6ff671a03e9c6fb13 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Tue, 29 Sep 2026 13:51:05 +0200
+Subject: [PATCH] wifi: ath10k: support scheduled scan with the NLO offload
+
+ath10k advertises sched scan limits when the firmware has
+WMI_SERVICE_NLO but uses NLO only for WoWLAN net-detect: there is no
+sched_scan_start op and max_sched_scan_reqs is 0, so
+NL80211_CMD_START_SCHED_SCAN fails with EOPNOTSUPP.  Android relies on
+it (PNO) to find a known network while the screen is off; without it a
+tablet that loses its access point only reconnects when the screen
+turns on or on a watchdog scan every twenty minutes.
+
+Program the same NLO configuration while the host is awake, and report
+WMI_NLO_MATCH_EVENTID as scheduled scan results.
+
+---
+ drivers/net/wireless/ath/ath10k/mac.c     |  5 ++
+ drivers/net/wireless/ath/ath10k/wmi-tlv.c |  7 +++
+ drivers/net/wireless/ath/ath10k/wow.c     | 60 +++++++++++++++++++++++
+ drivers/net/wireless/ath/ath10k/wow.h     |  4 ++
+ 4 files changed, 76 insertions(+)
+
+diff --git a/drivers/net/wireless/ath/ath10k/mac.c b/drivers/net/wireless/ath/ath10k/mac.c
+index 8e604697d6..1a0e32b40b 100644
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -9522,6 +9522,8 @@ static const struct ieee80211_ops ath10k_ops = {
+ 	.suspend			= ath10k_wow_op_suspend,
+ 	.resume				= ath10k_wow_op_resume,
+ 	.set_wakeup			= ath10k_wow_op_set_wakeup,
++	.sched_scan_start		= ath10k_sched_scan_start,
++	.sched_scan_stop		= ath10k_sched_scan_stop,
+ #endif
+ #ifdef CONFIG_MAC80211_DEBUGFS
+ 	.sta_add_debugfs		= ath10k_sta_add_debugfs,
+@@ -10106,6 +10108,9 @@ int ath10k_mac_register(struct ath10k *ar)
+ 	ar->hw->wiphy->max_scan_ie_len = WLAN_SCAN_PARAMS_MAX_IE_LEN;
+ 
+ 	if (test_bit(WMI_SERVICE_NLO, ar->wmi.svc_map)) {
++		/* one scheduled scan at a time, see ath10k_sched_scan_start() */
++		if (IS_ENABLED(CONFIG_PM))
++			ar->hw->wiphy->max_sched_scan_reqs = 1;
+ 		ar->hw->wiphy->max_sched_scan_ssids = WMI_PNO_MAX_SUPP_NETWORKS;
+ 		ar->hw->wiphy->max_match_sets = WMI_PNO_MAX_SUPP_NETWORKS;
+ 		ar->hw->wiphy->max_sched_scan_ie_len = WMI_PNO_MAX_IE_LENGTH;
+diff --git a/drivers/net/wireless/ath/ath10k/wmi-tlv.c b/drivers/net/wireless/ath/ath10k/wmi-tlv.c
+index 01f2d1fa9d..b3805a9f70 100644
+--- a/drivers/net/wireless/ath/ath10k/wmi-tlv.c
++++ b/drivers/net/wireless/ath/ath10k/wmi-tlv.c
+@@ -733,6 +733,13 @@ static void ath10k_wmi_tlv_op_rx(struct ath10k *ar, struct sk_buff *skb)
+ 	case WMI_TLV_WOW_WAKEUP_HOST_EVENTID:
+ 		ath10k_wmi_event_wow_wakeup_host(ar, skb);
+ 		break;
++	case WMI_TLV_NLO_MATCH_EVENTID:
++		ath10k_dbg(ar, ATH10K_DBG_WMI, "wmi tlv nlo match\n");
++		ieee80211_sched_scan_results(ar->hw);
++		break;
++	case WMI_TLV_NLO_SCAN_COMPLETE_EVENTID:
++		ath10k_dbg(ar, ATH10K_DBG_WMI, "wmi tlv nlo scan complete\n");
++		break;
+ 	case WMI_TLV_DCS_INTERFERENCE_EVENTID:
+ 		ath10k_wmi_event_dcs_interference(ar, skb);
+ 		break;
+diff --git a/drivers/net/wireless/ath/ath10k/wow.c b/drivers/net/wireless/ath/ath10k/wow.c
+index 92af8bc633..49e18fa095 100644
+--- a/drivers/net/wireless/ath/ath10k/wow.c
++++ b/drivers/net/wireless/ath/ath10k/wow.c
+@@ -263,6 +263,66 @@ static int ath10k_wmi_pno_check(struct ath10k *ar, u32 vdev_id,
+ 	return ret;
+ }
+ 
++/*
++ * Scheduled scan (PNO) while the host is awake, with the same NLO offload
++ * that WoWLAN net-detect programs: the firmware scans on the schedule and
++ * reports a match with WMI_NLO_MATCH_EVENTID.
++ */
++int ath10k_sched_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++			    struct cfg80211_sched_scan_request *req,
++			    struct ieee80211_scan_ies *ies)
++{
++	struct ath10k *ar = hw->priv;
++	struct ath10k_vif *arvif = (void *)vif->drv_priv;
++	struct wmi_pno_scan_req *pno;
++	int ret;
++
++	if (vif->type != NL80211_IFTYPE_STATION)
++		return -EOPNOTSUPP;
++
++	pno = kzalloc(sizeof(*pno), GFP_KERNEL);
++	if (!pno)
++		return -ENOMEM;
++
++	mutex_lock(&ar->conf_mutex);
++	ret = ath10k_wmi_pno_check(ar, arvif->vdev_id, req, pno);
++	if (ret) {
++		ath10k_warn(ar, "invalid sched scan request: %d\n", ret);
++		goto out;
++	}
++
++	ret = ath10k_wmi_wow_config_pno(ar, arvif->vdev_id, pno);
++	if (ret)
++		ath10k_warn(ar, "failed to start sched scan: %d\n", ret);
++out:
++	mutex_unlock(&ar->conf_mutex);
++	kfree(pno);
++	return ret;
++}
++
++int ath10k_sched_scan_stop(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
++{
++	struct ath10k *ar = hw->priv;
++	struct ath10k_vif *arvif = (void *)vif->drv_priv;
++	struct wmi_pno_scan_req *pno;
++	int ret;
++
++	pno = kzalloc(sizeof(*pno), GFP_KERNEL);
++	if (!pno)
++		return -ENOMEM;
++
++	pno->enable = 0;
++	pno->vdev_id = arvif->vdev_id;
++
++	mutex_lock(&ar->conf_mutex);
++	ret = ath10k_wmi_wow_config_pno(ar, arvif->vdev_id, pno);
++	if (ret)
++		ath10k_warn(ar, "failed to stop sched scan: %d\n", ret);
++	mutex_unlock(&ar->conf_mutex);
++	kfree(pno);
++	return ret;
++}
++
+ static int ath10k_vif_wow_set_wakeups(struct ath10k_vif *arvif,
+ 				      struct cfg80211_wowlan *wowlan)
+ {
+diff --git a/drivers/net/wireless/ath/ath10k/wow.h b/drivers/net/wireless/ath/ath10k/wow.h
+index 14ea4e1e92..3546877dc7 100644
+--- a/drivers/net/wireless/ath/ath10k/wow.h
++++ b/drivers/net/wireless/ath/ath10k/wow.h
+@@ -18,6 +18,10 @@ int ath10k_wow_op_suspend(struct ieee80211_hw *hw,
+ 			  struct cfg80211_wowlan *wowlan);
+ int ath10k_wow_op_resume(struct ieee80211_hw *hw);
+ void ath10k_wow_op_set_wakeup(struct ieee80211_hw *hw, bool enabled);
++int ath10k_sched_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++			    struct cfg80211_sched_scan_request *req,
++			    struct ieee80211_scan_ies *ies);
++int ath10k_sched_scan_stop(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
+ 
+ #else
+ 
+-- 
+2.47.3
+

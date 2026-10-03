@@ -1,0 +1,351 @@
+From 0f02b64221c12370c45a279c2fb78a59ee552713 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:06:34 +0200
+Subject: [PATCH] software_isp: drive the focus lens from the IPA
+
+Pass the lens controls to the soft IPA and apply the lens positions it
+emits. The lens opens on the first move, once the sensor streams, and
+closes when the ISP stops, before the sensor. The generated headers and
+proxy are regenerated from soft.mojom.
+
+---
+ .../internal/software_isp/software_isp.h      |  4 +-
+ include/libcamera/ipa/soft.mojom              |  4 +-
+ include/libcamera/ipa/soft_ipa_interface.h    |  8 +++-
+ include/libcamera/ipa/soft_ipa_proxy.h        | 10 ++++
+ src/libcamera/proxy/soft_ipa_proxy.cpp        | 46 +++++++++++++++++--
+ src/libcamera/software_isp/software_isp.cpp   | 28 ++++++++++-
+ 6 files changed, 91 insertions(+), 9 deletions(-)
+
+diff --git a/include/libcamera/internal/software_isp/software_isp.h b/include/libcamera/internal/software_isp/software_isp.h
+index 78624659..975a4fe9 100644
+--- a/include/libcamera/internal/software_isp/software_isp.h
++++ b/include/libcamera/internal/software_isp/software_isp.h
+@@ -48,7 +48,7 @@ LOG_DECLARE_CATEGORY(SoftwareIsp)
+ class SoftwareIsp : public Object
+ {
+ public:
+-	SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
++	SoftwareIsp(PipelineHandler *pipe, CameraSensor *sensor,
+ 		    ControlInfoMap *ipaControls);
+ 	~SoftwareIsp();
+ 
+@@ -91,6 +91,7 @@ public:
+ private:
+ 	void saveIspParams();
+ 	void setSensorCtrls(const ControlList &sensorControls);
++	void setLensCtrls(const ControlList &lensControls);
+ 	void statsReady(uint32_t frame, uint32_t bufferId);
+ 	void inputReady(FrameBuffer *input);
+ 	void outputReady(FrameBuffer *output);
+@@ -101,6 +102,7 @@ private:
+ 	DebayerParams debayerParams_;
+ 	DmaBufAllocator dmaHeap_;
+ 	bool ccmEnabled_;
++	CameraLens *lens_;
+ 
+ 	std::unique_ptr<ipa::soft::IPAProxySoft> ipa_;
+ 	std::deque<FrameBuffer *> queuedInputBuffers_;
+diff --git a/include/libcamera/ipa/soft.mojom b/include/libcamera/ipa/soft.mojom
+index 77328c5f..b3913354 100644
+--- a/include/libcamera/ipa/soft.mojom
++++ b/include/libcamera/ipa/soft.mojom
+@@ -17,7 +17,8 @@ interface IPASoftInterface {
+ 	     libcamera.SharedFD fdStats,
+ 	     libcamera.SharedFD fdParams,
+ 	     libcamera.IPACameraSensorInfo sensorInfo,
+-	     libcamera.ControlInfoMap sensorControls)
++	     libcamera.ControlInfoMap sensorControls,
++	     libcamera.ControlInfoMap lensControls)
+ 		=> (int32 ret, libcamera.ControlInfoMap ipaControls, bool ccmEnabled);
+ 	start() => (int32 ret);
+ 	stop();
+@@ -33,6 +34,7 @@ interface IPASoftInterface {
+ 
+ interface IPASoftEventInterface {
+ 	setSensorControls(libcamera.ControlList sensorControls);
++	setLensControls(libcamera.ControlList lensControls);
+ 	setIspParams();
+ 	metadataReady(uint32 frame, libcamera.ControlList metadata);
+ };
+diff --git a/include/libcamera/ipa/soft_ipa_interface.h b/include/libcamera/ipa/soft_ipa_interface.h
+index e5f77896..bf34f672 100644
+--- a/include/libcamera/ipa/soft_ipa_interface.h
++++ b/include/libcamera/ipa/soft_ipa_interface.h
+@@ -45,8 +45,9 @@ enum class _SoftCmd {
+ 
+ enum class _SoftEventCmd {
+ 	SetSensorControls = 1,
+-	SetIspParams = 2,
+-	MetadataReady = 3,
++	SetLensControls = 2,
++	SetIspParams = 3,
++	MetadataReady = 4,
+ };
+ 
+ 
+@@ -78,6 +79,7 @@ public:
+ 		const SharedFD &fdParams,
+ 		const IPACameraSensorInfo &sensorInfo,
+ 		const ControlInfoMap &sensorControls,
++		const ControlInfoMap &lensControls,
+ 		ControlInfoMap *ipaControls,
+ 		bool *ccmEnabled) = 0;
+ 
+@@ -102,6 +104,8 @@ public:
+ 
+ 	Signal<const ControlList &> setSensorControls;
+ 
++	Signal<const ControlList &> setLensControls;
++
+ 	Signal<> setIspParams;
+ 
+ 	Signal<uint32_t, const ControlList &> metadataReady;
+diff --git a/include/libcamera/ipa/soft_ipa_proxy.h b/include/libcamera/ipa/soft_ipa_proxy.h
+index 98d2532b..2f481395 100644
+--- a/include/libcamera/ipa/soft_ipa_proxy.h
++++ b/include/libcamera/ipa/soft_ipa_proxy.h
+@@ -41,6 +41,7 @@ public:
+         	const SharedFD &fdParams,
+         	const IPACameraSensorInfo &sensorInfo,
+         	const ControlInfoMap &sensorControls,
++        	const ControlInfoMap &lensControls,
+         	ControlInfoMap *ipaControls,
+         	bool *ccmEnabled) override;
+ 
+@@ -74,6 +75,7 @@ private:
+         	const SharedFD &fdParams,
+         	const IPACameraSensorInfo &sensorInfo,
+         	const ControlInfoMap &sensorControls,
++        	const ControlInfoMap &lensControls,
+         	ControlInfoMap *ipaControls,
+         	bool *ccmEnabled);
+         int32_t initIPC(
+@@ -82,6 +84,7 @@ private:
+         	const SharedFD &fdParams,
+         	const IPACameraSensorInfo &sensorInfo,
+         	const ControlInfoMap &sensorControls,
++        	const ControlInfoMap &lensControls,
+         	ControlInfoMap *ipaControls,
+         	bool *ccmEnabled);
+ 
+@@ -125,6 +128,13 @@ private:
+ 		size_t dataSize,
+ 		const std::vector<SharedFD> &fds);
+ 
++        void setLensControlsThread(
++        	const ControlList &lensControls);
++	void setLensControlsIPC(
++		std::vector<uint8_t>::const_iterator data,
++		size_t dataSize,
++		const std::vector<SharedFD> &fds);
++
+         void setIspParamsThread();
+ 	void setIspParamsIPC(
+ 		std::vector<uint8_t>::const_iterator data,
+diff --git a/src/libcamera/proxy/soft_ipa_proxy.cpp b/src/libcamera/proxy/soft_ipa_proxy.cpp
+index 5de15c4f..e6632918 100644
+--- a/src/libcamera/proxy/soft_ipa_proxy.cpp
++++ b/src/libcamera/proxy/soft_ipa_proxy.cpp
+@@ -82,6 +82,7 @@ IPAProxySoft::IPAProxySoft(IPAModule *ipam, bool isolate)
+ 
+ 
+ 	ipa_->setSensorControls.connect(this, &IPAProxySoft::setSensorControlsThread);
++	ipa_->setLensControls.connect(this, &IPAProxySoft::setLensControlsThread);
+ 	ipa_->setIspParams.connect(this, &IPAProxySoft::setIspParamsThread);
+ 	ipa_->metadataReady.connect(this, &IPAProxySoft::metadataReadyThread);
+ 
+@@ -109,6 +110,10 @@ void IPAProxySoft::recvMessage(const IPCMessage &data)
+ 		setSensorControlsIPC(data.data().cbegin(), dataSize, data.fds());
+ 		break;
+ 	}
++	case _SoftEventCmd::SetLensControls: {
++		setLensControlsIPC(data.data().cbegin(), dataSize, data.fds());
++		break;
++	}
+ 	case _SoftEventCmd::SetIspParams: {
+ 		setIspParamsIPC(data.data().cbegin(), dataSize, data.fds());
+ 		break;
+@@ -129,13 +134,14 @@ int32_t IPAProxySoft::init(
+ 	const SharedFD &fdParams,
+ 	const IPACameraSensorInfo &sensorInfo,
+ 	const ControlInfoMap &sensorControls,
++	const ControlInfoMap &lensControls,
+ 	ControlInfoMap *ipaControls,
+ 	bool *ccmEnabled)
+ {
+ 	if (isolate_)
+-		return initIPC(settings, fdStats, fdParams, sensorInfo, sensorControls, ipaControls, ccmEnabled);
++		return initIPC(settings, fdStats, fdParams, sensorInfo, sensorControls, lensControls, ipaControls, ccmEnabled);
+ 	else
+-		return initThread(settings, fdStats, fdParams, sensorInfo, sensorControls, ipaControls, ccmEnabled);
++		return initThread(settings, fdStats, fdParams, sensorInfo, sensorControls, lensControls, ipaControls, ccmEnabled);
+ }
+ 
+ int32_t IPAProxySoft::initThread(
+@@ -144,10 +150,11 @@ int32_t IPAProxySoft::initThread(
+ 	const SharedFD &fdParams,
+ 	const IPACameraSensorInfo &sensorInfo,
+ 	const ControlInfoMap &sensorControls,
++	const ControlInfoMap &lensControls,
+ 	ControlInfoMap *ipaControls,
+ 	bool *ccmEnabled)
+ {
+-	int32_t _ret = ipa_->init(settings, fdStats, fdParams, sensorInfo, sensorControls, ipaControls, ccmEnabled);
++	int32_t _ret = ipa_->init(settings, fdStats, fdParams, sensorInfo, sensorControls, lensControls, ipaControls, ccmEnabled);
+ 
+ 	proxy_.moveToThread(&thread_);
+ 
+@@ -160,6 +167,7 @@ int32_t IPAProxySoft::initIPC(
+ 	const SharedFD &fdParams,
+ 	const IPACameraSensorInfo &sensorInfo,
+ 	const ControlInfoMap &sensorControls,
++	const ControlInfoMap &lensControls,
+ 	ControlInfoMap *ipaControls,
+ 	bool *ccmEnabled)
+ {
+@@ -189,6 +197,10 @@ int32_t IPAProxySoft::initIPC(
+ 	std::vector<uint8_t> sensorControlsBuf;
+ 	std::tie(sensorControlsBuf, std::ignore) =
+ 		IPADataSerializer<ControlInfoMap>::serialize(sensorControls
++, &controlSerializer_);
++	std::vector<uint8_t> lensControlsBuf;
++	std::tie(lensControlsBuf, std::ignore) =
++		IPADataSerializer<ControlInfoMap>::serialize(lensControls
+ , &controlSerializer_);
+ 	appendPOD<uint32_t>(_ipcInputBuf.data(), settingsBuf.size());
+ 	appendPOD<uint32_t>(_ipcInputBuf.data(), fdStatsBuf.size());
+@@ -197,11 +209,13 @@ int32_t IPAProxySoft::initIPC(
+ 	appendPOD<uint32_t>(_ipcInputBuf.data(), fdParamsFds.size());
+ 	appendPOD<uint32_t>(_ipcInputBuf.data(), sensorInfoBuf.size());
+ 	appendPOD<uint32_t>(_ipcInputBuf.data(), sensorControlsBuf.size());
++	appendPOD<uint32_t>(_ipcInputBuf.data(), lensControlsBuf.size());
+ 	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), settingsBuf.begin(), settingsBuf.end());
+ 	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), fdStatsBuf.begin(), fdStatsBuf.end());
+ 	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), fdParamsBuf.begin(), fdParamsBuf.end());
+ 	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), sensorInfoBuf.begin(), sensorInfoBuf.end());
+ 	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), sensorControlsBuf.begin(), sensorControlsBuf.end());
++	_ipcInputBuf.data().insert(_ipcInputBuf.data().end(), lensControlsBuf.begin(), lensControlsBuf.end());
+ 	_ipcInputBuf.fds().insert(_ipcInputBuf.fds().end(), fdStatsFds.begin(), fdStatsFds.end());
+ 	_ipcInputBuf.fds().insert(_ipcInputBuf.fds().end(), fdParamsFds.begin(), fdParamsFds.end());
+ 
+@@ -549,6 +563,32 @@ void IPAProxySoft::setSensorControlsIPC(
+ 	setSensorControls.emit(sensorControls);
+ }
+ 
++void IPAProxySoft::setLensControlsThread(
++	const ControlList &lensControls)
++{
++	ASSERT(state_ != ProxyStopped);
++	setLensControls.emit(lensControls);
++}
++
++void IPAProxySoft::setLensControlsIPC(
++	[[maybe_unused]] std::vector<uint8_t>::const_iterator data,
++	[[maybe_unused]] size_t dataSize,
++	[[maybe_unused]] const std::vector<SharedFD> &fds)
++{
++
++
++	const size_t lensControlsStart = 0;
++
++
++	ControlList lensControls =
++        IPADataSerializer<ControlList>::deserialize(
++        	data + lensControlsStart,
++        	data + dataSize,
++        	&controlSerializer_);
++
++	setLensControls.emit(lensControls);
++}
++
+ void IPAProxySoft::setIspParamsThread()
+ {
+ 	ASSERT(state_ != ProxyStopped);
+diff --git a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+index 28e2a360..4bf8f3dc 100644
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -13,6 +13,8 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
++#include <linux/v4l2-controls.h>
++
+ #include <libcamera/base/log.h>
+ #include <libcamera/base/thread.h>
+ 
+@@ -20,6 +22,7 @@
+ #include <libcamera/formats.h>
+ #include <libcamera/stream.h>
+ 
++#include "libcamera/internal/camera_lens.h"
+ #include "libcamera/internal/framebuffer.h"
+ #include "libcamera/internal/ipa_manager.h"
+ #include "libcamera/internal/software_isp/debayer_params.h"
+@@ -73,11 +76,12 @@ LOG_DEFINE_CATEGORY(SoftwareIsp)
+  * \param[out] ipaControls The IPA controls to update
+  * handler
+  */
+-SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
++SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, CameraSensor *sensor,
+ 			 ControlInfoMap *ipaControls)
+ 	: dmaHeap_(DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap |
+ 		   DmaBufAllocator::DmaBufAllocatorFlag::SystemHeap |
+-		   DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf)
++		   DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf),
++	  lens_(sensor->focusLens())
+ {
+ 	/*
+ 	 * debayerParams_ must be initialized because the initial value is used for
+@@ -145,6 +149,7 @@ SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
+ 			 sharedParams_.fd(),
+ 			 sensorInfo,
+ 			 sensor->controls(),
++			 lens_ ? lens_->controls() : ControlInfoMap(),
+ 			 ipaControls,
+ 			 &ccmEnabled_);
+ 	if (ret) {
+@@ -159,6 +164,7 @@ SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
+ 					    metadataReady.emit(frame, metadata);
+ 				    });
+ 	ipa_->setSensorControls.connect(this, &SoftwareIsp::setSensorCtrls);
++	ipa_->setLensControls.connect(this, &SoftwareIsp::setLensCtrls);
+ 
+ 	debayer_->moveToThread(&ispWorkerThread_);
+ }
+@@ -362,6 +368,13 @@ void SoftwareIsp::stop()
+ 
+ 	ipa_->stop();
+ 
++	/*
++	 * The sensor is still streaming: let the lens driver park the lens
++	 * and power down while the lens bus still answers.
++	 */
++	if (lens_)
++		lens_->close();
++
+ 	for (auto buffer : queuedOutputBuffers_) {
+ 		FrameMetadata &metadata = buffer->_d()->metadata();
+ 		metadata.status = FrameMetadata::FrameCancelled;
+@@ -400,6 +413,17 @@ void SoftwareIsp::setSensorCtrls(const ControlList &sensorControls)
+ 	setSensorControls.emit(sensorControls);
+ }
+ 
++void SoftwareIsp::setLensCtrls(const ControlList &lensControls)
++{
++	if (!lens_ || !lensControls.contains(V4L2_CID_FOCUS_ABSOLUTE))
++		return;
++
++	/* Opens the lens on the first move, once the sensor is streaming. */
++	int32_t position = lensControls.get(V4L2_CID_FOCUS_ABSOLUTE).get<int32_t>();
++	if (lens_->setFocusPosition(position))
++		LOG(SoftwareIsp, Warning) << "Failed to move the lens to " << position;
++}
++
+ void SoftwareIsp::statsReady(uint32_t frame, uint32_t bufferId)
+ {
+ 	ispStatsReady.emit(frame, bufferId);
+-- 
+2.47.3
+

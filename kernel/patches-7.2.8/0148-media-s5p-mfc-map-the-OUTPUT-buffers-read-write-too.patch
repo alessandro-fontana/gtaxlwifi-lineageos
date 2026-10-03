@@ -1,0 +1,38 @@
+From da6d49e5a5331dc472ffb7593c7a0e5bddb27510 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:50:26 +0200
+Subject: [PATCH] media: s5p-mfc: map the OUTPUT buffers read-write too
+
+The v10 decoder firmware writes to the stream buffers it reads, using
+the coded picture buffer as work space. An imported dmabuf queued on
+the OUTPUT queue is mapped DMA_TO_DEVICE, read-only in the IOMMU, and
+on Exynos7870 the write is a System MMU access protection fault, which
+panics. It showed with a 720x1278 H.264 stream; 1080p streams played
+without it.
+
+Make the OUTPUT queues bidirectional, as the CAPTURE ones already are.
+
+---
+ drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 7899a8140d..bb342200c2 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -964,6 +964,12 @@ static int s5p_mfc_open(struct file *file)
+ 		ret = -ENOENT;
+ 		goto err_queue_init;
+ 	}
++	/*
++	 * The v10 firmware also writes to the stream buffers it reads (the
++	 * decoder uses the CPB as work space): an imported dmabuf mapped
++	 * DMA_TO_DEVICE is read-only in the IOMMU, and the write faults.
++	 */
++	q->bidirectional = 1;
+ 	/* One way to indicate end-of-stream for MFC is to set the
+ 	 * bytesused == 0. However by default videobuf2 handles bytesused
+ 	 * equal to 0 as a special case and changes its value to the size
+-- 
+2.47.3
+

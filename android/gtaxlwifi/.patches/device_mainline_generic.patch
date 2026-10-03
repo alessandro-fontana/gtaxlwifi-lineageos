@@ -1,0 +1,756 @@
+diff --git a/configs/init/Android.bp b/configs/init/Android.bp
+index 1276524..1037102 100644
+--- a/configs/init/Android.bp
++++ b/configs/init/Android.bp
+@@ -50,3 +50,10 @@ prebuilt_etc {
+     src: "ueventd.generic.rc",
+     vendor: true,
+ }
++
++prebuilt_etc {
++    name: "dev_restorecon.rc",
++    src: "dev_restorecon.rc",
++    sub_dir: "overlay-system_ext-etc-init",
++    vendor: true,
++}
+diff --git a/configs/init/dev_restorecon.rc b/configs/init/dev_restorecon.rc
+new file mode 100644
+index 0000000..37a8347
+--- /dev/null
++++ b/configs/init/dev_restorecon.rc
+@@ -0,0 +1,8 @@
++# generic_init creates these directories before the policy is loaded;
++# ueventd relabels the nodes it finds, but not directories that already exist.
++on early-init
++    restorecon /dev/dri /dev/input /dev/snd /dev/dma_heap
++
++# hardware_detect renames the hidden render node after the first relabel.
++on post-fs
++    restorecon_recursive /dev/dri
+diff --git a/configs/init/init.generic.rc b/configs/init/init.generic.rc
+index 034b184..94af7d4 100644
+--- a/configs/init/init.generic.rc
++++ b/configs/init/init.generic.rc
+@@ -50,7 +50,7 @@ on early-boot && property:ro.vendor.get_display_ppi.lcd_density=*
+ on boot
+     setprop ro.sf.lcd_density 160
+ 
+-on property:ro.hardware.gralloc=default && property:sys.bootstat.first_boot_completed=1
++on property:ro.hardware.gralloc=default && property:sys.boot_completed=1
+     write /sys/class/vtconsole/vtcon0/bind 0
+     write /sys/class/vtconsole/vtcon1/bind 0
+ 
+@@ -66,10 +66,6 @@ service vendor.light-default /vendor/bin/hw/android.hardware.light-service.linea
+ on early-init
+     exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules zram.ko
+ 
+-on init
+-    # Undo the override from system init.rc
+-    write /proc/sys/kernel/modprobe /vendor/bin/modprobe_kernel
+-
+ # Mount
+ on init
+     trigger firmware_mounts_complete
+diff --git a/configs/init/init_dev_config_override.rc b/configs/init/init_dev_config_override.rc
+index f94c6bd..5595a8b 100644
+--- a/configs/init/init_dev_config_override.rc
++++ b/configs/init/init_dev_config_override.rc
+@@ -1,4 +1,7 @@
+ service init_dev_config /vendor/bin/hardware_detect
++    # userdebug: su is permissive. hardware_detect sets system properties
++    # (ro.hardware.*, ro.boot.vendor.apex.*) and works on /dev while it is still tmpfs (04, §38).
++    seclabel u:r:su:s0
+     override
+     oneshot
+     user root
+diff --git a/configs/properties/vendor.prop b/configs/properties/vendor.prop
+index 45afd94..bc33051 100644
+--- a/configs/properties/vendor.prop
++++ b/configs/properties/vendor.prop
+@@ -7,7 +7,6 @@
+ # MAJOR_CLASS: 0x01 -> 1 (Computer)
+ # MINOR_CLASS: 0x04 -> 4 (Desktop workstation)
+ bluetooth.device.class_of_device=26,1,4
+-persist.bluetooth.a2dp_aac.vbr_supported=true
+ 
+ # Display
+ ro.surface_flinger.enable_frame_rate_override=false
+diff --git a/device.mk b/device.mk
+index 9e91cf6..7c0aab1 100644
+--- a/device.mk
++++ b/device.mk
+@@ -17,13 +17,14 @@ TARGET_GRAPHICS_COMPOSER_HAL := custom
+ TARGET_HEALTH_HAL := custom
+ TARGET_HOSTAPD_AND_WPA_SUPPLICANT_FORM := legacy
+ TARGET_MESA_DO_NOT_SET_AS_DEFAULT := true
+-TARGET_SUPPORTS_SUSPEND := false
++TARGET_SUPPORTS_SUSPEND ?= false
+ TARGET_USES_TABLET_INPUT_AS_TOUCHSCREEN := true
+ include device/mainline/common/optional/options.mk
+ $(call inherit-product, device/mainline/common/mainline_common.mk)
+ 
+ # APEX
+-OVERRIDE_PRODUCT_COMPRESSED_APEX := false
++# ?=: a device may turn compression back on (gtaxlwifi, for its super)
++OVERRIDE_PRODUCT_COMPRESSED_APEX ?= false
+ 
+ # Audio
+ PRODUCT_COPY_FILES += \
+@@ -47,6 +48,16 @@ $(call inherit-product, frameworks/native/build/tablet-10in-xhdpi-2048-dalvik-he
+ PRODUCT_PACKAGES += \
+     get_display_ppi
+ 
++# Filesystem tools
++# prepare_fs_for_mount() in fs_mgr runs /system/bin/tune2fs and
++# /system/bin/e2fsck to add the ext4 encrypt and verity features to a
++# partition before mounting it. /data is mounted by the second stage init,
++# after the switch to system as root, so the system variants are the ones
++# that get used.
++PRODUCT_PACKAGES += \
++    e2fsck \
++    tune2fs
++
+ # Graphics
+ PRODUCT_PACKAGES += \
+     amdgpu.ids
+@@ -54,7 +65,14 @@ PRODUCT_PACKAGES += \
+ # Graphics (Mesa)
+ TARGET_MESA_ENABLE_SOFTWARE_RENDERER := true
+ 
++# Hardware detection: hardware_detect picks graphics and audio HALs, APEXes
++# and DRM nodes at every boot, and copies VINTF fragments into /vendor (an
++# overlay). A device with fixed hardware can opt out and declare all of it in
++# its build instead: then the alternative HALs below are not installed.
++TARGET_GENERIC_HARDWARE_DETECT ?= true
++
+ # Graphics allocator
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_COPY_FILES += \
+     device/mainline/common/optional/graphics-allocator-hal_default-hidl-2.0/manifest_mainline_common_graphics-allocator-hal_default-hidl-2.0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-allocator-hal_default-hidl-2.0.xml \
+     external/minigbm-upstream/cros_gralloc/aidl/allocator.minigbm_upstream.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/allocator.minigbm_upstream.xml \
+@@ -64,6 +82,7 @@ PRODUCT_PACKAGES += \
+     android.hardware.graphics.allocator@2.0-impl \
+     android.hardware.graphics.allocator@2.0-service \
+     android.hardware.graphics.mapper@2.0-impl-2.1
++endif
+ 
+ PRODUCT_PACKAGES += \
+     gralloc.gbm
+@@ -71,9 +90,12 @@ PRODUCT_PACKAGES += \
+ TARGET_MINIGBM_UPSTREAM_ENABLE_GBM_MESA_DRIVER := true
+ TARGET_MINIGBM_UPSTREAM_INSIDE_APEX := false
+ 
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ $(call soong_config_set_bool,minigbm_upstream,include_vintf_fragments,false)
++endif
+ 
+ # Graphics composer
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_COPY_FILES += \
+     device/mainline/common/optional/drm_hwcomposer/manifest_mainline_common_graphics-composer-hal_drm_hwcomposer_libhardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-composer-hal_default-hidl-2.4.xml \
+     device/mainline/common/optional/graphics-composer-hal_default-hidl-2.2/manifest_mainline_common_graphics-composer-hal_default-hidl-2.2.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-composer-hal_default-hidl-2.2.xml \
+@@ -85,12 +107,17 @@ PRODUCT_PACKAGES += \
+     android.hardware.graphics.composer@2.4-service
+ 
+ PRODUCT_PACKAGES += \
+-    android.hardware.composer.hwc3-service.drm_upstream \
+     android.hardware.graphics.composer@2.1-service.drmfb
++endif
+ 
++PRODUCT_PACKAGES += \
++    android.hardware.composer.hwc3-service.drm_upstream
++
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ $(call soong_config_set_bool,drm_hwcomposer_upstream,include_init_rc,false)
+ $(call soong_config_set_bool,drm_hwcomposer_upstream,include_vintf_fragments,false)
+ $(call soong_config_set_bool,drmfb_composer,include_vintf_fragments,false)
++endif
+ 
+ # Graphics Vulkan
+ PRODUCT_PACKAGES += \
+@@ -125,19 +152,30 @@ PRODUCT_PACKAGES += \
+ 
+ PRODUCT_PACKAGES += \
+     console_override.rc \
+-    device_generic_logging.rc \
+-    device_generic_settings.rc \
+-    device_generic_settings.sh \
++    device_generic_logging.rc
++
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
++PRODUCT_PACKAGES += \
+     hal_services.rc \
+     init_dev_config_override.rc
++endif
++
++# Turns "show taps" on at every boot, from the su domain: a debugging aid
++# for PCs and VMs. A device can opt out.
++TARGET_GENERIC_SHOW_TOUCHES ?= true
++ifeq ($(TARGET_GENERIC_SHOW_TOUCHES),true)
++PRODUCT_PACKAGES += \
++    device_generic_settings.rc \
++    device_generic_settings.sh
++endif
+ 
+ PRODUCT_PACKAGES += \
+-    use_memfd.rc \
+     zram.rc
+ 
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_PACKAGES += \
+-    hardware_detect \
+-    overlay_remounter_override
++    hardware_detect
++endif
+ 
+ $(call soong_config_set,mainline_common_libinit,set_properties_from,both)
+ 
+@@ -205,3 +243,13 @@ $(call inherit-product, packages/modules/Virtualization/apex/product_packages.mk
+ # Wi-Fi
+ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/configs/wifi/wpa_supplicant.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant.conf
++
++# System properties: vendor_init cannot set them (use_memfd_prop,
++# bluetooth_prop), so they go in the system build.prop.
++PRODUCT_SYSTEM_PROPERTIES += \
++    sys.use_memfd=true \
++    persist.bluetooth.a2dp_aac.vbr_supported=true
++
++# /dev directories created by generic_init before the policy: restorecon in early-init.
++PRODUCT_PACKAGES += \
++    dev_restorecon.rc
+diff --git a/sepolicy/private/dontaudit.te b/sepolicy/private/dontaudit.te
+new file mode 100644
+index 0000000..85f02b9
+--- /dev/null
++++ b/sepolicy/private/dontaudit.te
+@@ -0,0 +1,15 @@
++# storaged has no sysfs access in AOSP: eMMC rev and stat fail on stock builds too.
++dontaudit storaged sysfs:file r_file_perms;
++# kdevtmpfs works on its own devtmpfs, not mounted here (/dev is a tmpfs).
++dontaudit kernel device:dir { write add_name remove_name };
++dontaudit kernel device:blk_file { create setattr unlink };
++# Properties never set and without a context (vendor.display.*, persist.vendor.audio.*):
++# the read returns empty, as it does today.
++dontaudit { surfaceflinger audioserver } vendor_default_prop:file { getattr open read map };
++
++# Isolated processes cannot reach content_capture by design.
++dontaudit isolated_app_all content_capture_service:service_manager find;
++
++# KSM: the mainline kernel exposes it, AOSP does not label it.
++type sysfs_ksm, fs_type, sysfs_type;
++r_dir_file(system_server, sysfs_ksm)
+diff --git a/sepolicy/private/genfs_contexts b/sepolicy/private/genfs_contexts
+index 2b6c6c2..40bb940 100644
+--- a/sepolicy/private/genfs_contexts
++++ b/sepolicy/private/genfs_contexts
+@@ -1,2 +1,6 @@
+ genfscon efivarfs / u:object_r:efivarfs:s0
+ genfscon virtiofs / u:object_r:virtiofs:s0
++# The type and the vendor_init permission are already in the platform; only the label is missing.
++genfscon proc /sys/kernel/firmware_config u:object_r:proc_firmware_config:s0
++# Mainline kernel with KSM: statistics read by system_server (04, §38).
++genfscon sysfs /kernel/mm/ksm u:object_r:sysfs_ksm:s0
+diff --git a/sepolicy/private/init_dev.te b/sepolicy/private/init_dev.te
+new file mode 100644
+index 0000000..db156d0
+--- /dev/null
++++ b/sepolicy/private/init_dev.te
+@@ -0,0 +1,31 @@
++# /dev directories created by generic_init before the policy (dev_restorecon.rc).
++allow init tmpfs:dir relabelfrom;
++allow init { gpu_device input_device audio_device dmabuf_heap_device }:dir relabelto;
++
++# Device nodes and block devices created by generic_init before the policy.
++allow init tmpfs:chr_file relabelfrom;
++allow init gpu_device:chr_file relabelto;
++allow init { loop_device swap_block_device }:blk_file relabelto;
++
++# Mainline kernel: tracepoints and debugfs differ from what init.rc expects.
++dontaudit init debugfs_bootreceiver_tracing:dir { write add_name };
++dontaudit init debugfs_mmc:file setattr;
++# init.rc writes discard_max_bytes: a neverallow forbids generic sysfs to init.
++dontaudit init sysfs:file { open write };
++
++# block devices labelled by number in the device tree; init's restorecon on the GPU nodes
++allow init { cache_block_device userdata_block_device metadata_block_device }:blk_file relabelto;
++allow init gpu_device:chr_file getattr;
++
++# ueventd relabels the nodes created by generic_init before the policy.
++allow ueventd tmpfs:{ chr_file lnk_file } { getattr relabelfrom };
++allow ueventd dev_type:{ chr_file lnk_file } relabelto;
++
++# usbd waits for the gadget HAL (an APEX chosen by hardware_detect, starts later):
++# without binder_use servicemanager cannot notify it and USB is never configured.
++binder_use(usbd)
++
++# copy-up in the /vendor overlay: the upper keeps vendor_configs_file and
++# overlay_remounter has full rights on vendor_file_type (AOSP). init's restorecon
++# to overlayfs_file is unnecessary, and a neverallow forbids it.
++dontaudit init vendor_configs_file:{ dir file } relabelfrom;
+diff --git a/sepolicy/private/overlay_remounter.te b/sepolicy/private/overlay_remounter.te
+new file mode 100644
+index 0000000..50e21d3
+--- /dev/null
++++ b/sepolicy/private/overlay_remounter.te
+@@ -0,0 +1,10 @@
++# Read-write overlay of /vendor (addon fstab): upper and work on tmpfs under /mnt/scratch.
++# Overlayfs checks accesses with the credentials of the mounter,
++# that is overlay_remounter, even when another process reads or writes.
++userdebug_or_eng(`
++  allow overlay_remounter tmpfs:dir create_dir_perms;
++  allow overlay_remounter tmpfs:chr_file unlink;
++  allow overlay_remounter tmpfs:file create_file_perms;
++  allow overlay_remounter overlayfs_file:dir create_dir_perms;
++  allow overlay_remounter overlayfs_file:file create_file_perms;
++')
+diff --git a/sepolicy/private/property_contexts b/sepolicy/private/property_contexts
+new file mode 100644
+index 0000000..56ad4c7
+--- /dev/null
++++ b/sepolicy/private/property_contexts
+@@ -0,0 +1,20 @@
++# Build properties introduced after the A16 labels: same classes as their
++# *.sdk and *.release_or_codename siblings (04, §38).
++ro.build.version.sdk_full                    u:object_r:build_prop:s0 exact string
++ro.build.version.known_codenames             u:object_r:build_prop:s0 exact string
++ro.build.version.release_or_preview_display  u:object_r:build_prop:s0 exact string
++ro.system.build.version.sdk_full             u:object_r:build_prop:s0 exact string
++ro.system_ext.build.version.sdk_full         u:object_r:build_prop:s0 exact string
++ro.product.build.version.sdk_full            u:object_r:build_prop:s0 exact string
++ro.system_dlkm.build.version.sdk_full        u:object_r:build_prop:s0 exact string
++ro.vendor.build.version.sdk_full             u:object_r:build_vendor_prop:s0 exact string
++ro.vendor_dlkm.build.version.sdk_full        u:object_r:build_vendor_prop:s0 exact string
++ro.odm.build.version.sdk_full                u:object_r:build_odm_prop:s0 exact string
++
++# Read by healthd_mode_charger.cpp in charger mode, but AOSP does not label
++# it in any property_contexts: without this line it falls into default_prop
++# and the charger_vendor domain gets a denial at every heartbeat (43 measured
++# per session). charger_config_prop is the class of the other charger
++# configuration properties, which charger_type can already read
++# (system/sepolicy/private/charger_type.te).
++ro.charger_mode_autoboot u:object_r:charger_config_prop:s0 exact bool
+diff --git a/sepolicy/vendor/file.te b/sepolicy/vendor/file.te
+new file mode 100644
+index 0000000..2e96474
+--- /dev/null
++++ b/sepolicy/vendor/file.te
+@@ -0,0 +1 @@
++type sysfs_sound, fs_type, sysfs_type;
+diff --git a/sepolicy/vendor/file_contexts b/sepolicy/vendor/file_contexts
+index cbf4992..b19cbb4 100644
+--- a/sepolicy/vendor/file_contexts
++++ b/sepolicy/vendor/file_contexts
+@@ -1,7 +1,9 @@
+ # Configuration files
+-/vendor/etc/overlay-system_ext-etc-init(/.*)?		u:object_r:system_file:s0
++/vendor/etc/overlay-system_ext-etc-init(/.*)?		u:object_r:vendor_file:s0
+ 
+ # Executables
+ /vendor/bin/hw/android\.hardware\.health-service\.generic		u:object_r:hal_health_default_exec:s0
+ /vendor/bin/get_display_ppi						u:object_r:vendor_get_display_ppi_exec:s0
+ /vendor/bin/hardware_detect						u:object_r:vendor_hardware_detect_exec:s0
++# render node hidden by hardware_detect: still a GPU node
++/dev/dri/renderD[0-9]+_orig    u:object_r:gpu_device:s0
+diff --git a/sepolicy/vendor/genfs_contexts b/sepolicy/vendor/genfs_contexts
+new file mode 100644
+index 0000000..fba62c8
+--- /dev/null
++++ b/sepolicy/vendor/genfs_contexts
+@@ -0,0 +1 @@
++genfscon sysfs /class/drm u:object_r:sysfs_gpu:s0
+diff --git a/sepolicy/vendor/hal_sysfs.te b/sepolicy/vendor/hal_sysfs.te
+new file mode 100644
+index 0000000..23313ca
+--- /dev/null
++++ b/sepolicy/vendor/hal_sysfs.te
+@@ -0,0 +1,11 @@
++# sysfs nodes of the mainline kernel; the paths are in the device's genfs_contexts.
++r_dir_file(hal_graphics_allocator_default, sysfs_gpu)
++r_dir_file(hal_graphics_composer_default, sysfs_gpu)
++r_dir_file(hal_usb_gadget_default, sysfs_udc)
++r_dir_file(hal_audio_default, sysfs_sound)
++
++get_prop(hal_usb_gadget_default, usb_control_prop)
++get_prop(hal_graphics_composer_default, vendor_hwc_drm_prop)
++
++# persist.device_config.* flags without a context and never set: the default applies
++dontaudit { hal_graphics_allocator_default hal_graphics_composer_default } default_prop:file { getattr open read map };
+diff --git a/sepolicy/vendor/property_contexts b/sepolicy/vendor/property_contexts
+index bbec28e..3b4e3ab 100644
+--- a/sepolicy/vendor/property_contexts
++++ b/sepolicy/vendor/property_contexts
+@@ -1,2 +1,3 @@
+ # Display
+ ro.vendor.get_display_ppi.		u:object_r:vendor_get_display_ppi_prop:s0
++vendor.hwc.drm.scale_with_gpu		u:object_r:vendor_hwc_drm_prop:s0 exact int
+diff --git a/sepolicy/vendor/vendor_get_display_ppi.te b/sepolicy/vendor/vendor_get_display_ppi.te
+index d3d42c4..c64f875 100644
+--- a/sepolicy/vendor/vendor_get_display_ppi.te
++++ b/sepolicy/vendor/vendor_get_display_ppi.te
+@@ -5,3 +5,6 @@ init_daemon_domain(vendor_get_display_ppi);
+ 
+ get_prop(vendor_get_display_ppi, vendor_hwc_drm_prop)
+ set_prop(vendor_get_display_ppi, vendor_get_display_ppi_prop)
++
++allow vendor_get_display_ppi kmsg_device:chr_file w_file_perms;
++r_dir_file(vendor_get_display_ppi, sysfs_gpu)
+diff --git a/sepolicy/vendor/vendor_hardware_detect.te b/sepolicy/vendor/vendor_hardware_detect.te
+index 80c15ef..abda483 100644
+--- a/sepolicy/vendor/vendor_hardware_detect.te
++++ b/sepolicy/vendor/vendor_hardware_detect.te
+@@ -7,3 +7,14 @@ allow vendor_hardware_detect gpu_device:dir r_dir_perms;
+ allow vendor_hardware_detect gpu_device:chr_file { getattr ioctl map open read write };
+ 
+ r_dir_file(vendor_hardware_detect, audio_device)
++
++# starts before APEX: bootstrap linker and libc
++use_bootstrap_libs(vendor_hardware_detect)
++allow vendor_hardware_detect kmsg_device:chr_file w_file_perms;
++
++# starts before dev_restorecon.rc: /dev/dri and /dev/snd are still tmpfs
++allow vendor_hardware_detect tmpfs:dir r_dir_perms;
++allow vendor_hardware_detect tmpfs:chr_file { getattr open read ioctl };
++get_prop(vendor_hardware_detect, usb_control_prop)
++
++r_dir_file(vendor_hardware_detect, sysfs_gpu)
+diff --git a/services/generic_init/Android.bp b/services/generic_init/Android.bp
+index 2ac3834..96fc23b 100644
+--- a/services/generic_init/Android.bp
++++ b/services/generic_init/Android.bp
+@@ -57,6 +57,8 @@ cc_defaults {
+         "libfs_avb",
+         "libgsi",
+         "liblp",
++        // liblp reads the size of super with get_block_device_size()
++        "libext4_utils",
+     ],
+ 
+     cflags: [
+diff --git a/services/generic_init/first_stage_init.cpp b/services/generic_init/first_stage_init.cpp
+index 540a190..b8de506 100644
+--- a/services/generic_init/first_stage_init.cpp
++++ b/services/generic_init/first_stage_init.cpp
+@@ -20,6 +20,7 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <paths.h>
++#include <poll.h>
+ #include <stdlib.h>
+ #include <sys/mount.h>
+ #include <sys/stat.h>
+@@ -159,6 +160,64 @@ void ExecuteVendorInitProgram(BootMode boot_mode) {
+     ForkExecveAndWaitForCompletion(path, const_cast<char**>(args));
+ }
+ 
++// Boot splash (§43).
++//
++// Between the DECON reset (1.17 s) and the SurfaceFlinger modeset (~21 s) the
++// panel is on and shows nothing. /system/bin/bootsplash, in the ramdisk,
++// draws the LineageOS animation on it.
++//
++// The timing is bounded at both ends. Not before /dev is mounted, and not
++// after SwitchRoot, which moves /dev under the new root and would leave the
++// child — still tied to the old one — without any /dev.
++//
++// In between, start as early as possible: the splash is launched BEFORE the
++// first ueventd and waits on its own for /dev/dri/card0 to appear, so it
++// draws as soon as the node exists rather than at the end of the scan.
++// generic_init only waits for it at the SwitchRoot boundary
++// (WaitForBootsplash), where it has normally finished long before: the 2 s
++// limit is there because a boot must not depend on a splash.
++int StartBootsplash(const std::string& cmdline) {
++    constexpr const char* program = "/system/bin/bootsplash";
++
++    if (access(program, X_OK) != 0) return -1;
++
++    int pipe_fds[2];
++    if (pipe2(pipe_fds, O_CLOEXEC) != 0) {
++        PLOG(WARNING) << "bootsplash: pipe2 failed";
++        return -1;
++    }
++
++    pid_t pid = fork();
++    if (pid < 0) {
++        PLOG(WARNING) << "bootsplash: fork failed";
++        close(pipe_fds[0]);
++        close(pipe_fds[1]);
++        return -1;
++    }
++
++    if (pid == 0) {
++        close(pipe_fds[0]);
++        fcntl(pipe_fds[1], F_SETFD, 0);  // must survive the execv
++        std::string arg = "--ready-fd=" + std::to_string(pipe_fds[1]);
++        const char* args[] = {program, arg.c_str(), nullptr};
++        execv(program, const_cast<char**>(args));
++        _exit(127);
++    }
++
++    close(pipe_fds[1]);
++    return pipe_fds[0];
++}
++
++void WaitForBootsplash(int fd) {
++    if (fd < 0) return;
++    struct pollfd p = {.fd = fd, .events = POLLIN, .revents = 0};
++    int n = TEMP_FAILURE_RETRY(poll(&p, 1, 2000));
++    if (n <= 0) {
++        LOG(WARNING) << "bootsplash: no signal within 2 s, going on";
++    }
++    close(fd);
++}
++
+ void ExecuteSecondStageInit(char** argv) {
+     const char* path = "/system/bin/init";
+     const char* args[] = {path, "selinux_setup", nullptr};
+@@ -450,6 +509,16 @@ int FirstStageMain(int argc, char** argv) {
+             bootconfig.find("androidboot.load_modules_parallel = \"true\"") != std::string::npos;
+ 
+     BootMode boot_mode = GetBootMode(cmdline, bootconfig);
++
++    // The splash (§43) starts here, as early as possible: /dev, /sys and /proc
++    // are mounted, the kernel has already registered exynos-drm (1.18 s) and
++    // it does not need the module loading that follows. Launching it after the
++    // modules cost one more second of black (measured: 3.04 s versus 1.9 s).
++    // In charger mode too: the animation covers the black until the charger's
++    // battery screen, as before charging was decided by U-Boot (§55). Not in
++    // recovery.
++    int splash_fd = boot_mode != BootMode::RECOVERY_MODE ? StartBootsplash(cmdline) : -1;
++
+     if (!LoadKernelModules(boot_mode, false,
+                            want_parallel, "/lib/modules")) {
+         LOG(ERROR) << "Failed to load kernel modules from ramdisk";
+@@ -505,6 +574,9 @@ int FirstStageMain(int argc, char** argv) {
+         // Load kernel modules, create devices, and parse partitions, until ready
+         ueventd_main(ParseConfig({"/system/etc/ueventd.ramdisk.rc"}), true);
+ 
++        // Last useful moment: after SwitchRoot the child would no longer have /dev.
++        WaitForBootsplash(splash_fd);
++
+         mkdir("/first_stage_ramdisk", 0755);
+         // SwitchRoot() must be called with a mount point as the target, so we bind mount the
+         // target directory to itself here.
+@@ -541,6 +613,14 @@ int FirstStageMain(int argc, char** argv) {
+     setenv(kEnvFirstStageStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(),
+            1);
+ 
++    // The ueventd run above created every device node before any SELinux
++    // policy was loaded, so they are all labelled tmpfs. The second-stage
++    // ueventd relabels the nodes it finds, but apexd-bootstrap is started
++    // right after it and can reach /dev/loop-control first: getattr denied.
++    // apexd waits for that node (WaitForFile, 20 s), so leaving none behind
++    // lets the second-stage ueventd create it with its label.
++    unlink("/dev/loop-control");
++
+     auto fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+     dup2(fd, STDOUT_FILENO);
+     dup2(fd, STDERR_FILENO);
+diff --git a/services/generic_init/mount_handler.cpp b/services/generic_init/mount_handler.cpp
+index 8abfea6..14d39b9 100644
+--- a/services/generic_init/mount_handler.cpp
++++ b/services/generic_init/mount_handler.cpp
+@@ -13,9 +13,13 @@
+ #include <android-base/strings.h>
+ #include <android-base/unique_fd.h>
+ #include <fs_mgr.h>
++#include <fs_mgr_dm_linear.h>
+ #include <fstab/fstab.h>
+ #include <libdm/loop_control.h>
++#include <liblp/liblp.h>
+ #include <linux/loop.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
+ #include <sys/ioctl.h>
+ #include <sys/mount.h>
+ #include <unistd.h>
+@@ -192,6 +196,12 @@ enum class MountUserdataParam {
+     IMAGES = 1,
+     BIND_MOUNT_DIR = 2,
+     TMPFS = 3,
++    // Do not mount userdata partitions at all. The second stage init is then
++    // free to mount them itself from the device fstab, which is required for
++    // file-based encryption: fs_mgr_mount_all() skips any entry flagged
++    // first_stage_mount, and only that function sets ro.crypto.state and
++    // ro.crypto.type.
++    DISABLE = 4,
+ };
+ 
+ const std::unordered_map<std::string, MountFirmwareParam> kStringToMountFirmwareParamMap = {
+@@ -207,6 +217,9 @@ const std::unordered_map<std::string, MountFirmwareParam> kStringToMountFirmware
+ const std::unordered_map<std::string, MountSystemParam> kStringToMountSystemParamMap = {
+     {"std_parts", MountSystemParam::STANDARD_PARTITIONS_WITH_PARTNAME},
+     {"blk_devices", MountSystemParam::ANY_BLOCK_DEVICES_AS_PARTITION},
++    // As blk_devices, but only the logical partitions mapped from "super"
++    // are probed (see OnBlockDeviceAdd).
++    {"super", MountSystemParam::ANY_BLOCK_DEVICES_AS_PARTITION},
+     {"imgs", MountSystemParam::IMAGES},
+     {"imgs_ram", MountSystemParam::IMAGES_COPY_TO_RAM},
+ };
+@@ -216,10 +229,18 @@ const std::unordered_map<std::string, MountUserdataParam> kStringToMountUserdata
+     {"imgs", MountUserdataParam::IMAGES},
+     {"bind_mount_dir", MountUserdataParam::BIND_MOUNT_DIR},
+     {"tmpfs", MountUserdataParam::TMPFS},
++    {"disable", MountUserdataParam::DISABLE},
++    {"false", MountUserdataParam::DISABLE},
+ };
+ 
+ MountFirmwareParam param_mount_firmware = MountFirmwareParam::ALL_POSSIBLE_DIRS;
+ MountSystemParam param_mount_system = MountSystemParam::STANDARD_PARTITIONS_WITH_PARTNAME;
++// mount_system=super: physical block devices are never mounted to find out
++// what they hold. Probing mounts every filesystem it finds, and tries to
++// remount it read-write: on a disk shared with the vendor's own partitions
++// (calibration, modem data) that writes their superblocks at every boot, and
++// an ext4 set to panic on errors takes the boot down on a failed write.
++bool param_probe_only_super = false;
+ MountUserdataParam param_mount_userdata = MountUserdataParam::STANDARD_PARTITIONS_WITH_PARTNAME;
+ 
+ constexpr char kFirmwareFstabMountPoint[] = "/mnt/vendor/firmware";
+@@ -314,6 +335,7 @@ void ParseConfig(void) {
+     if (ret) {
+         if (kStringToMountSystemParamMap.contains(tmp)) {
+             param_mount_system = kStringToMountSystemParamMap.at(tmp);
++            param_probe_only_super = tmp == "super";
+         } else {
+             LOG(ERROR) << "Parameter " << kMountSystemParam << " value is invalid";
+         }
+@@ -679,16 +701,52 @@ void OnPreBlockDevices(void) {
+     ParseConfig();
+ }
+ 
++// Dynamic partitions: a GPT partition named "super" holds logical partitions
++// described by the liblp metadata at its start. They are mapped with
++// dm-linear as soon as super shows up; the uevents of the resulting dm-N
++// devices come back to OnBlockDeviceAdd and are recognised by content like
++// any other block device.
++static bool super_mapped = false;
++
++static void MapSuperPartition(const std::string& devpath) {
++    // The dm control node is a misc device and may not have been created yet
++    // at this point of coldboot; libdm opens it once, on first use.
++    static const char kDmControl[] = "/dev/device-mapper";
++    if (access(kDmControl, F_OK) != 0 &&
++        mknod(kDmControl, S_IFCHR | 0600, makedev(10, 236)) != 0) {
++        PLOG(ERROR) << "super: cannot create " << kDmControl;
++        return;
++    }
++    auto metadata = ReadMetadata(devpath, 0);
++    if (!metadata) {
++        LOG(ERROR) << "super: no logical partition metadata on " << devpath;
++        return;
++    }
++    if (!CreateLogicalPartitions(*metadata, devpath)) {
++        LOG(ERROR) << "super: failed to map the logical partitions of " << devpath;
++        return;
++    }
++    super_mapped = true;
++    LOG(INFO) << "super: logical partitions of " << devpath << " mapped";
++}
++
+ void OnBlockDeviceAdd(const android::init::Uevent& uevent, const std::string& devpath, const std::vector<std::string>& links) {
+     if (block_devices->contains(devpath)) {
+         LOG(ERROR) << "Block device " << devpath << " has already been parsed";
+         return;
+     }
+ 
++    if (uevent.partition_name == "super") {
++        if (!super_mapped) MapSuperPartition(devpath);
++        return;
++    }
++
+     static const std::list<std::string> kIgnoredDevnamePrefixs = {
+         "dm-", "loop", "ram", "zram"
+     };
+     for (const auto& prefix : kIgnoredDevnamePrefixs) {
++        // dm devices are ours once super has been mapped
++        if (prefix == "dm-" && super_mapped) continue;
+         if (StartsWith(uevent.device_name, prefix)) {
+             return;
+         }
+@@ -701,11 +759,34 @@ void OnBlockDeviceAdd(const android::init::Uevent& uevent, const std::string& de
+     info.partuuid = uevent.partition_uuid;
+     info.links = links;
+     info.is_partition = std::isdigit(static_cast<unsigned char>(info.devname.back()));
++    // Recorded by name (by-name links of the addon fstab), never mounted
++    if (param_probe_only_super && !StartsWith(info.devname, "dm-")) {
++        block_devices->insert({devpath, std::make_shared<BlockDeviceInfo>(info)});
++        return;
++    }
+     if (!ParseApfsBlockDevice(&info)) ParseBlockDevice(&info);
+     block_devices->insert({devpath, std::make_shared<BlockDeviceInfo>(info)});
+     UpdateMountInfo(block_devices->at(devpath));
+ }
+ 
++// The /dev/block/by-name links are only created by the second stage
++// ueventd. An addon fstab entry naming /dev/block/by-name/<partition> is
++// resolved here against the GPT partition names found while scanning the
++// block devices; an unknown name is left as is and the mount fails.
++void ResolveByNameBlockDevice(FstabEntry* entry) {
++    const std::string kByName = "/dev/block/by-name/";
++    if (!StartsWith(entry->blk_device, kByName)) return;
++    const std::string name = entry->blk_device.substr(kByName.size());
++    for (const auto& [devpath, info] : *block_devices) {
++        if (info->is_partition && info->partname == name) {
++            LOG(INFO) << "Addon fstab: " << entry->blk_device << " is " << devpath;
++            entry->blk_device = devpath;
++            return;
++        }
++    }
++    LOG(INFO) << "Addon fstab: no partition named " << name;
++}
++
+ // TODO: Handle block device removal?
+ 
+ bool CanQuitUeventd(bool print_log) {
+@@ -996,6 +1077,7 @@ void OnPostBlockDevices(bool is_recovery_mode) {
+ 
+     if (!is_recovery_mode && !addon_fstab.empty()) {
+         for (auto& entry : addon_fstab) {
++            ResolveByNameBlockDevice(&entry);
+             fstab.push_back(std::move(entry));
+         }
+     }
+diff --git a/services/generic_init/mount_helpers.cpp b/services/generic_init/mount_helpers.cpp
+index ddafa55..3315ac6 100644
+--- a/services/generic_init/mount_helpers.cpp
++++ b/services/generic_init/mount_helpers.cpp
+@@ -109,7 +109,10 @@ static void CreateOverlayfsUpperdirAndWorkdirIfNotPresent(const FstabEntry& entr
+         LOG(INFO) << "Creating " << param << " for overlayfs mount point "
+                   << entry.mount_point << ": " << arg;
+ 
+-        // TODO: Bring mkdir_recursive() to util.cpp and use it
++        const auto parent = std::filesystem::path(arg).parent_path().string();
++        if (!TryAccessDir(parent) && mkdir(parent.c_str(), 0755)) {
++            LOG(ERROR) << "Failed to create directory " << parent;
++        }
+         if (mkdir(arg.c_str(), 0755)) {
+             LOG(ERROR) << "Failed to create directory " << arg;
+         }
+diff --git a/services/generic_init/ueventd.cpp b/services/generic_init/ueventd.cpp
+index 33c368a..bb77b04 100644
+--- a/services/generic_init/ueventd.cpp
++++ b/services/generic_init/ueventd.cpp
+@@ -139,6 +139,14 @@ static std::string ConstructUeventString(const Uevent& uevent) {
+     return result;
+ }
+ 
++// Quiescence window: main_loop exits after this long without a uevent.
++// On the second run the callback can never return kStop, because the
++// CanQuitUeventd check is guarded by first_run: this timeout is always paid
++// in full, and every uevent restarts it from scratch
++// (reset_start_time_on_uevent). Whatever arrives later is picked up by init's
++// ueventd, which does its own coldboot from /sys/devices.
++static constexpr auto kUeventQuiescence = 1s;
++
+ void main_loop(const UeventListener& uevent_listener,
+                const std::vector<std::shared_ptr<UeventHandler>>& uevent_handlers,
+                const bool& first_run) {
+@@ -156,7 +164,7 @@ void main_loop(const UeventListener& uevent_listener,
+                 LOG(INFO) << "Handled uevent";
+             }
+             return ListenerAction::kContinue;
+-        }, true, 5s);
++        }, true, kUeventQuiescence);
+     } while (!MountHandler::CanQuitUeventd(true));
+ }
+ 

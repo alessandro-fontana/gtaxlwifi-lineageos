@@ -1,0 +1,102 @@
+From 05c1a7737c5f4ac32fe6c0e9d5e1b4840f2bcadf Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 10:00:00 +0000
+Subject: [PATCH] iio: adc: exynos_adc: make the result register offset a
+ variant property
+
+Every variant reads its conversion result from DATX, so the shared
+interrupt handler has the offset hardcoded.  That does not hold for all
+of them, and a variant whose result lives elsewhere cannot be added
+without either duplicating the handler or reading the wrong register.
+
+Move the offset into struct exynos_adc_data and have the handler use it.
+Each existing variant is given ADC_V1_DATX_OFFSET, which is where it was
+reading before, so nothing changes for any of them.
+
+No functional change.
+---
+ drivers/iio/adc/exynos_adc.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/iio/adc/exynos_adc.c b/drivers/iio/adc/exynos_adc.c
+index c1a0061b16..c87319d197 100644
+--- a/drivers/iio/adc/exynos_adc.c
++++ b/drivers/iio/adc/exynos_adc.c
+@@ -32,7 +32,8 @@
+ /* S3C/EXYNOS4412/5250 ADC_V1 registers definitions */
+ #define ADC_V1_CON(x)		((x) + 0x00)
+ #define ADC_V1_DLY(x)		((x) + 0x08)
+-#define ADC_V1_DATX(x)		((x) + 0x0C)
++#define ADC_V1_DATX_OFFSET	0x0C
++#define ADC_V1_DATX(x)		((x) + ADC_V1_DATX_OFFSET)
+ #define ADC_V1_DATY(x)		((x) + 0x10)
+ #define ADC_V1_UPDN(x)		((x) + 0x14)
+ #define ADC_V1_INTCLR(x)	((x) + 0x18)
+@@ -128,6 +129,7 @@ struct exynos_adc_data {
+ 	bool needs_adc_phy;
+ 	int phy_offset;
+ 	u32 mask;
++	unsigned int dat_offset;
+ 
+ 	void (*init_hw)(struct exynos_adc *info);
+ 	void (*exit_hw)(struct exynos_adc *info);
+@@ -245,6 +247,7 @@ static void exynos_adc_v1_start_conv(struct exynos_adc *info,
+ static const struct exynos_adc_data exynos4212_adc_data = {
+ 	.num_channels	= MAX_EXYNOS4212_ADC_CHANNELS,
+ 	.mask		= ADC_DATX_MASK,	/* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 	.needs_adc_phy	= true,
+ 	.phy_offset	= EXYNOS_ADCV1_PHY_OFFSET,
+ 
+@@ -257,6 +260,7 @@ static const struct exynos_adc_data exynos4212_adc_data = {
+ static const struct exynos_adc_data exynos_adc_v1_data = {
+ 	.num_channels	= MAX_ADC_V1_CHANNELS,
+ 	.mask		= ADC_DATX_MASK,	/* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 	.needs_adc_phy	= true,
+ 	.phy_offset	= EXYNOS_ADCV1_PHY_OFFSET,
+ 
+@@ -269,6 +273,7 @@ static const struct exynos_adc_data exynos_adc_v1_data = {
+ static const struct exynos_adc_data exynos_adc_s5pv210_data = {
+ 	.num_channels	= MAX_S5PV210_ADC_CHANNELS,
+ 	.mask		= ADC_DATX_MASK,	/* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 
+ 	.init_hw	= exynos_adc_v1_init_hw,
+ 	.exit_hw	= exynos_adc_v1_exit_hw,
+@@ -349,6 +354,7 @@ static void exynos_adc_v2_start_conv(struct exynos_adc *info,
+ static const struct exynos_adc_data exynos_adc_v2_data = {
+ 	.num_channels	= MAX_ADC_V2_CHANNELS,
+ 	.mask		= ADC_DATX_MASK, /* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 	.needs_adc_phy	= true,
+ 	.phy_offset	= EXYNOS_ADCV2_PHY_OFFSET,
+ 
+@@ -361,6 +367,7 @@ static const struct exynos_adc_data exynos_adc_v2_data = {
+ static const struct exynos_adc_data exynos3250_adc_data = {
+ 	.num_channels	= MAX_EXYNOS3250_ADC_CHANNELS,
+ 	.mask		= ADC_DATX_MASK, /* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 	.needs_sclk	= true,
+ 	.needs_adc_phy	= true,
+ 	.phy_offset	= EXYNOS_ADCV1_PHY_OFFSET,
+@@ -390,6 +397,7 @@ static void exynos_adc_exynos7_init_hw(struct exynos_adc *info)
+ static const struct exynos_adc_data exynos7_adc_data = {
+ 	.num_channels	= MAX_ADC_V1_CHANNELS,
+ 	.mask		= ADC_DATX_MASK, /* 12 bit ADC resolution */
++	.dat_offset	= ADC_V1_DATX_OFFSET,
+ 
+ 	.init_hw	= exynos_adc_exynos7_init_hw,
+ 	.exit_hw	= exynos_adc_v2_exit_hw,
+@@ -487,7 +495,7 @@ static irqreturn_t exynos_adc_isr(int irq, void *dev_id)
+ 	u32 mask = info->data->mask;
+ 
+ 	/* Read value */
+-	info->value = readl(ADC_V1_DATX(info->regs)) & mask;
++	info->value = readl(info->regs + info->data->dat_offset) & mask;
+ 
+ 	/* clear irq */
+ 	if (info->data->clear_irq)
+-- 
+2.47.3
+

@@ -1,0 +1,61 @@
+From a1ee73e6dfa95c7ec50e2124fa9ee04204bc7a3a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 13:47:21 +0200
+Subject: [PATCH] phy: samsung: mipi-video: exynos7870 CSIS1 needs its option
+ bit
+
+The vendor driver calls phy_set(phy, 1) before phy_power_on() for every
+CSIS, and for CSIS1 its device tree gives an option bit (option = <256
+3 256>: bit 3 of the CAM0 reset register, the other two PHYs have none).
+The bit is set and never cleared.
+
+Measured on the Galaxy Tab A 10.1 (2016), front camera on CSIS1: with
+the bit clear the receiver reports clock and data lane in ULPS
+(DPHY_STATUS 0x3c2) and no frame starts; setting it with the sensor
+already streaming brings the lanes to HS and frames arrive at 30 fps.
+
+---
+ drivers/phy/samsung/phy-exynos-mipi-video.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/phy/samsung/phy-exynos-mipi-video.c b/drivers/phy/samsung/phy-exynos-mipi-video.c
+index d9fea53b74..69e75fb1ef 100644
+--- a/drivers/phy/samsung/phy-exynos-mipi-video.c
++++ b/drivers/phy/samsung/phy-exynos-mipi-video.c
+@@ -54,6 +54,14 @@ struct mipi_phy_device_desc {
+ 		 * releases the reset while the PHY is still isolated.
+ 		 */
+ 		bool enable_before_reset;
++		/*
++		 * A bit the vendor driver sets in the reset register before
++		 * powering the PHY on (phy_set(), "option" in its device
++		 * tree) and never clears. On exynos7870 CSIS1 needs it: with
++		 * the bit clear, clock and data lanes read as ULPS and not a
++		 * frame comes in.
++		 */
++		u32 option_val;
+ 	} phys[EXYNOS_MIPI_PHYS_NUM];
+ };
+ 
+@@ -258,6 +266,7 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
+ 			.resetn_reg = 0,
+ 			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+ 			.enable_before_reset = true,
++			.option_val = BIT(3),
+ 		}, {
+ 			/* EXYNOS_MIPI_PHY_ID_CSIS2 */
+ 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+@@ -304,6 +313,10 @@ static int __set_phy_state(const struct exynos_mipi_phy_desc *data,
+ 		 * vendor driver uses for every PHY of this SoC.
+ 		 */
+ 		if (on) {
++			if (data->option_val)
++				regmap_update_bits(resetn_map, data->resetn_reg,
++						   data->option_val,
++						   data->option_val);
+ 			regmap_update_bits(enable_map, data->enable_reg,
+ 					   data->enable_val, data->enable_val);
+ 			regmap_update_bits(resetn_map, data->resetn_reg,
+-- 
+2.47.3
+

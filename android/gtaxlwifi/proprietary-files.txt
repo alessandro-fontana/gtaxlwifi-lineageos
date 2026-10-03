@@ -1,0 +1,32 @@
+# GPS - Broadcom BCM4752 (§54, §72.2)
+#
+# The tablet's stock firmware (T580XXS5CTK1) has gpsd and gps.default.so
+# only as 32-bit, which this 64-bit build cannot use: they are taken from
+# the public firmware of another Samsung device, as the LOS 21 port did:
+#   gpsd, gps.default.so  Galaxy A8 2016, A810SKSS2CTI1
+# libwrappergps.so, which the port took from the SM-P610 firmware, is built
+# from source (hal/gnss/libwrappergps, §75.9): on Samsung Wi-Fi models it
+# does nothing. The changes to gpsd (including the two the LOS 21 port made by hand)
+# are blob_fixups in extract-files.py. Pins verified on 1/10 against the
+# A810SKSS2CTI1 firmware downloaded from Samsung (§72.2): gps.default.so is
+# the original, and the fixups on the original gpsd yield the same file as
+# before, byte for byte.
+vendor/bin/hw/gpsd|f1789b42062319cba9ef697c6343158197b95bf3|92c07ec07879a5c54d27aa1c29f500d4aa5e1d5c
+vendor/lib64/hw/gps.default.so|7ff3490a1a12f3397a26e2207ad9c3bf93e624a9|ce422828cad509cf0fecff55abec2055fde94789
+
+# Wi-Fi and Bluetooth firmware - Qualcomm QCA9377 (§3, §55)
+#
+# Until 25/09 they lived in firmware/ and were copied by hand into
+# device/mainline/generic after every repo sync. board.bin and nvm are the
+# Samsung files, which linux-firmware does not have in the right form (§3).
+vendor/firmware/ath10k/QCA9377/hw1.0/firmware-sdio-5.bin|0986815c9ef8d06d5d880a0fe035a758d0a88d0d
+vendor/firmware/ath10k/QCA9377/hw1.0/board.bin|643a919ab575c6b48da619d67bf1594bee73ee56
+vendor/firmware/qca/rampatch_00230302.bin|1c78d570abc7e5f48da32aabf21b4b0b579f88df
+vendor/firmware/qca/nvm_00230302.bin|ad089b97a8f1ea4463d0bbca03131d0329747d02
+
+# MFC video codec firmware (§58): Samsung's one for the 7870 (MFC v10,
+# 0xa0b0), renamed the way mainline s5p-mfc looks for it. Since 28/09 it is
+# the one from the tablet's stock firmware, T580XXS5CTK1,
+# /system/vendor/firmware/mfc_fw.bin (version 45180601); before, it was the
+# one from the LOS 21 port (45200831), with identical results (§67.3).
+vendor/firmware/mfc_fw.bin:vendor/firmware/s5p-mfc-v10.fw|f055d7e10134bad30021d6be36ac82e7927d6100

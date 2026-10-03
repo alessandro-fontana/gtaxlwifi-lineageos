@@ -1,0 +1,92 @@
+From eaea9293abf85d1da3b7b185d941775d1576f18b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 19 Sep 2026 13:47:06 +0200
+Subject: [PATCH] drm/bridge: samsung-dsim: do not reprogram the mode on
+ exynos7870 enable
+
+On this DSIM samsung_dsim_init() already programmes the display mode and
+raises the SFR standby bit, and it has to: the bit gates the transmit
+machinery as a whole, commands included, and the panel init table is sent
+before atomic_enable() runs.
+
+Doing the same work again in atomic_enable() - dropping standby, rewriting
+MDRESOL and the porches, raising standby - stalls the transmit FSM. The
+command that follows immediately, the panel's display on, is accepted by
+the driver without error but never reaches the DriverIC: from there the
+link is gone until the next full init, reads time out, and the panel stays
+dark with its registers still holding the values the init table left.
+Waiting for the header FIFO to drain before the rewrite was tried first and
+does not help.
+
+The defect is invisible under Android, whose wake-up path writes the panel
+brightness again a moment later and so gets a second chance; the charger UI
+has no second writer, so after its first blank the screen never comes back.
+
+Measured on the charger path by reading the DriverIC registers back over
+DSI: 6 failures out of 12 wake-ups with the reprogramming, 0 out of 14
+without, and the failure confirmed on the device.
+
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c | 43 +++++++++++++++------------
+ 1 file changed, 24 insertions(+), 19 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index f902106609..e56f29d935 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -1760,28 +1760,33 @@ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
+ 	struct samsung_dsim *dsi = bridge_to_dsi(bridge);
+ 
+ 	/*
+-	 * The cold init on exynos7870 has already programmed the display
+-	 * mode and raised the SFR standby so that the panel init table
+-	 * could be transmitted (see samsung_dsim_init()). Rewriting
+-	 * MDRESOL and the porches with standby high stalls the transmit
+-	 * FSM: the last queued command header then sits untransmitted in
+-	 * the FIFO until video actually starts, and every later command
+-	 * times out against it. The vendor CAL never reprograms these
+-	 * registers with standby high - dsim_reg_set_partial_update()
+-	 * drops it first and raises it again after. Let the pending
+-	 * header drain, then do the same.
++	 * On exynos7870 samsung_dsim_init() has already programmed the
++	 * display mode and raised the SFR standby, and it has to: on this
++	 * DSIM that bit gates the transmit machinery as a whole, commands
++	 * included, and the panel init table goes out before this point.
++	 *
++	 * Doing the work a second time here - dropping standby, rewriting
++	 * MDRESOL and the porches, raising standby again - stalls the
++	 * transmit FSM. The command that follows immediately, the panel's
++	 * display on, is accepted by the driver without error but never
++	 * reaches the DriverIC; from there the link is gone until the next
++	 * full init, reads time out, and the panel stays dark with its
++	 * registers still at the values the init table left. Waiting for
++	 * the header FIFO to drain before the rewrite is not enough: it
++	 * was tried, and the failure survives it.
++	 *
++	 * The defect is invisible under Android, whose wake-up writes the
++	 * brightness again a moment later and so gets a second chance that
++	 * the charger UI does not have - there the screen simply never
++	 * comes back. Measured on that path, reading the DriverIC
++	 * registers back over DSI: 6 failures out of 12 wake-ups with the
++	 * reprogramming, 0 out of 14 without.
+ 	 */
+-	if (dsi->plat_data->hw_type == DSIM_TYPE_EXYNOS7870) {
+-		if (dsi->driver_data->wait_for_hdr_fifo &&
+-		    samsung_dsim_wait_for_hdr_fifo(dsi))
+-			dev_warn(dsi->dev,
+-				 "header FIFO not empty before reprogramming\n");
+-		samsung_dsim_set_display_enable(dsi, false);
++	if (dsi->plat_data->hw_type != DSIM_TYPE_EXYNOS7870) {
++		samsung_dsim_set_display_mode(dsi);
++		samsung_dsim_set_display_enable(dsi, true);
+ 	}
+ 
+-	samsung_dsim_set_display_mode(dsi);
+-	samsung_dsim_set_display_enable(dsi, true);
+-
+ 	dsi->state |= DSIM_STATE_VIDOUT_AVAILABLE;}
+ 
+ static void samsung_dsim_atomic_disable(struct drm_bridge *bridge,
+-- 
+2.47.3
+

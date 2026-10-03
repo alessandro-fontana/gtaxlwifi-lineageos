@@ -1,0 +1,123 @@
+From 56736a70f434a414a627d1f8ed37c6290d9d7175 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 18:36:30 +0200
+Subject: [PATCH 29/30] android: give the internal buffers back once the whole
+ request is processed
+
+An internal buffer taken for a mapped stream whose source stream is not
+in the request is the source of every stream mapped on that source in
+the request, not only of the stream it was taken for. It went back to
+the pool when that stream's post-processing completed, while another
+stream (a scaled JPEG next to a YUV stream) could still be reading it,
+and a following request could capture into it: a torn image.
+
+Give all internal buffers of a request back once no post-processing of
+it is pending, or when it failed.
+
+---
+ src/android/camera_device.cpp | 41 ++++++++++++++++++-----------------
+ src/android/camera_device.h   |  1 +
+ 2 files changed, 22 insertions(+), 20 deletions(-)
+
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index 5e08ec5c..5d3f912d 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -1794,12 +1794,7 @@ void CameraDevice::requestComplete(Request *request)
+ 		flashFrameDone(descriptor);
+ 
+ 		/* Nothing will post-process them: give the internal buffers back. */
+-		for (auto &buffer : descriptor->buffers_) {
+-			if (buffer.internalBuffer) {
+-				buffer.stream->putBuffer(buffer.internalBuffer);
+-				buffer.internalBuffer = nullptr;
+-			}
+-		}
++		putInternalBuffers(descriptor);
+ 		descriptor->pendingStreamsToProcess_.clear();
+ 
+ 		bool still = descriptor->still_;
+@@ -1884,13 +1879,6 @@ void CameraDevice::requestComplete(Request *request)
+ 		if (ret) {
+ 			setBufferStatus(*buffer, Camera3RequestDescriptor::Status::Error);
+ 			descriptor->pendingStreamsToProcess_.erase(stream);
+-
+-			/*
+-			 * If the framebuffer is internal to CameraStream return
+-			 * it back now that we're done processing it.
+-			 */
+-			if (buffer->internalBuffer)
+-				stream->putBuffer(buffer->internalBuffer);
+ 		}
+ 	}
+ 
+@@ -1898,6 +1886,7 @@ void CameraDevice::requestComplete(Request *request)
+ 	bool still = descriptor->still_;
+ 	if (descriptor->pendingStreamsToProcess_.empty()) {
+ 		locker.unlock();
++		putInternalBuffers(descriptor);
+ 		completeDescriptor(descriptor);
+ 	} else {
+ 		locker.unlock();
+@@ -1997,6 +1986,23 @@ void CameraDevice::setBufferStatus(Camera3RequestDescriptor::StreamBuffer &strea
+ 	}
+ }
+ 
++/*
++ * Give the internal buffers of a request back to their pools. An internal
++ * buffer is the source of every stream derived from it in the request, not
++ * only of the stream it was taken for: it goes back once they are all
++ * processed, not when the first is, or the camera could capture into it
++ * while another stream still reads it.
++ */
++void CameraDevice::putInternalBuffers(Camera3RequestDescriptor *descriptor)
++{
++	for (auto &buffer : descriptor->buffers_) {
++		if (buffer.internalBuffer) {
++			buffer.stream->putBuffer(buffer.internalBuffer);
++			buffer.internalBuffer = nullptr;
++		}
++	}
++}
++
+ /**
+  * \brief Handle post-processing completion of a stream in a capture request
+  * \param[in] streamBuffer The StreamBuffer for which processing is complete
+@@ -2015,13 +2021,6 @@ void CameraDevice::streamProcessingComplete(Camera3RequestDescriptor::StreamBuff
+ {
+ 	setBufferStatus(*streamBuffer, status);
+ 
+-	/*
+-	 * If the framebuffer is internal to CameraStream return it back now
+-	 * that we're done processing it.
+-	 */
+-	if (streamBuffer->internalBuffer)
+-		streamBuffer->stream->putBuffer(streamBuffer->internalBuffer);
+-
+ 	Camera3RequestDescriptor *request = streamBuffer->request;
+ 
+ 	{
+@@ -2032,6 +2031,8 @@ void CameraDevice::streamProcessingComplete(Camera3RequestDescriptor::StreamBuff
+ 			return;
+ 	}
+ 
++	putInternalBuffers(request);
++
+ 	completeDescriptor(streamBuffer->request);
+ }
+ 
+diff --git a/src/android/camera_device.h b/src/android/camera_device.h
+index fcddc0b1..57f07ccd 100644
+--- a/src/android/camera_device.h
++++ b/src/android/camera_device.h
+@@ -96,6 +96,7 @@ private:
+ 	void notifyError(uint32_t frameNumber, camera3_stream_t *stream,
+ 			 camera3_error_msg_code code) const;
+ 	int processControls(Camera3RequestDescriptor *descriptor);
++	void putInternalBuffers(Camera3RequestDescriptor *descriptor);
+ 	void completeDescriptor(Camera3RequestDescriptor *descriptor)
+ 		LIBCAMERA_TSA_EXCLUDES(descriptorsMutex_);
+ 	void sendCaptureResults() LIBCAMERA_TSA_REQUIRES(descriptorsMutex_);
+-- 
+2.47.3
+

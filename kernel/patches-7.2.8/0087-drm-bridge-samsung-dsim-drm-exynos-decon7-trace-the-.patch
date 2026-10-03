@@ -1,0 +1,237 @@
+From e770b2ac2b4aa8ea5b1f51b37bf833a6ba09c570 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 07:41:26 +0000
+Subject: [PATCH] drm: bridge: samsung-dsim, drm/exynos: decon7: trace the
+ power sequence
+
+Diagnostic prints for the gtaxlwifi wake-up campaign. On the first
+wake-up with kernel #16 the tablet panicked; with panic=10 it rebooted
+on its own, and the black-box log stops 7 ms after "PLL locked", before
+the panel prepare() line that would have followed 20 ms later. The oops
+text never reaches the eMMC (userspace is stopped by the panic), so the
+only surviving datum is where the log breaks off, and the current code
+prints nothing between the PLL lock and the panel.
+
+Print every step of the DSIM bring-up and tear-down (runtime resume and
+suspend, reset, reset release, clock, PHY control, both FIFO sleeps of
+init_link, config and lanes, stop state, standby, pre_enable/enable/
+disable/post_disable), the interrupt status seen by the irq thread while
+the link is not yet initialised, and on the DECON side atomic_enable,
+the moment scanout really starts, and VIDCON0 as read in atomic_disable
+before the clocks go away.
+
+No functional change.
+---
+ drivers/gpu/drm/bridge/samsung-dsim.c      | 31 +++++++++++++++++++++-
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c |  6 +++++
+ 2 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/samsung-dsim.c b/drivers/gpu/drm/bridge/samsung-dsim.c
+index 984e26169b..32c047e967 100644
+--- a/drivers/gpu/drm/bridge/samsung-dsim.c
++++ b/drivers/gpu/drm/bridge/samsung-dsim.c
+@@ -1082,12 +1082,16 @@ static int samsung_dsim_init_link(struct samsung_dsim *dsi)
+ 	reg = samsung_dsim_read(dsi, DSIM_FIFOCTRL_REG);
+ 	reg &= ~0x1f;
+ 	samsung_dsim_write(dsi, DSIM_FIFOCTRL_REG, reg);
++	dev_info(dsi->dev, "link: fifo cleared, sleeping\n");
+ 
+ 	usleep_range(9000, 11000);
++	dev_info(dsi->dev, "link: fifo cleared, slept\n");
+ 
+ 	reg |= 0x1f;
+ 	samsung_dsim_write(dsi, DSIM_FIFOCTRL_REG, reg);
++	dev_info(dsi->dev, "link: fifo set, sleeping\n");
+ 	usleep_range(9000, 11000);
++	dev_info(dsi->dev, "link: fifo set, slept\n");
+ 
+ 	/* DSI configuration */
+ 	reg = 0;
+@@ -1168,6 +1172,7 @@ static int samsung_dsim_init_link(struct samsung_dsim *dsi)
+ 
+ 	lanes_mask = BIT(dsi->lanes) - 1;
+ 	samsung_dsim_enable_lane(dsi, lanes_mask);
++	dev_info(dsi->dev, "link: config %#x, lanes %#x on\n", reg, lanes_mask);
+ 
+ 	/* Check clock and data lane state are stop state */
+ 	timeout = 100;
+@@ -1185,6 +1190,8 @@ static int samsung_dsim_init_link(struct samsung_dsim *dsi)
+ 		    != DSIM_STOP_STATE_DAT(lanes_mask))
+ 			continue;
+ 	} while (!(reg & (DSIM_STOP_STATE_CLK | DSIM_TX_READY_HS_CLK)));
++	dev_info(dsi->dev, "link: lanes in stop state, status %#x, %d polls left\n",
++		 reg, timeout);
+ 
+ 	reg = samsung_dsim_read(dsi, DSIM_ESCMODE_REG);
+ 	reg &= ~DSIM_STOP_STATE_CNT_MASK;
+@@ -1633,6 +1640,9 @@ static irqreturn_t samsung_dsim_irq(int irq, void *dev_id)
+ 	}
+ 	samsung_dsim_write(dsi, DSIM_INTSRC_REG, status);
+ 
++	if (!(dsi->state & DSIM_STATE_INITIALIZED))
++		dev_info(dsi->dev, "irq: intsrc %#x before init done\n", status);
++
+ 	if (status & DSIM_INT_SW_RST_RELEASE) {
+ 		unsigned long mask = ~(DSIM_INT_RX_DONE |
+ 				       DSIM_INT_SFR_FIFO_EMPTY |
+@@ -1680,6 +1690,7 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 
+ 	samsung_dsim_reset(dsi);
+ 	samsung_dsim_enable_irq(dsi);
++	dev_info(dsi->dev, "init: reset written, irq on\n");
+ 
+ 	/*
+ 	 * Wait for the software reset to be released before touching any
+@@ -1700,6 +1711,8 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 		}
+ 	}
+ 
++	dev_info(dsi->dev, "init: reset released, enabling clock\n");
++
+ 	if (driver_data->reg_values[RESET_TYPE] == DSIM_FUNCRST)
+ 		samsung_dsim_enable_lane(dsi, BIT(dsi->lanes) - 1);
+ 
+@@ -1710,8 +1723,11 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 		return ret;
+ 	}
+ 
++	dev_info(dsi->dev, "init: clock on, phy ctrl\n");
+ 	samsung_dsim_set_phy_ctrl(dsi);
+-	samsung_dsim_init_link(dsi);
++	dev_info(dsi->dev, "init: link\n");
++	ret = samsung_dsim_init_link(dsi);
++	dev_info(dsi->dev, "init: link done (%d), display mode + standby\n", ret);
+ 
+ 	/*
+ 	 * The vendor CAL raises the SFR standby bit (SFR_CTRL bit 4) in
+@@ -1735,6 +1751,7 @@ static int samsung_dsim_init(struct samsung_dsim *dsi)
+ 	}
+ 
+ 	dsi->state |= DSIM_STATE_INITIALIZED;
++	dev_info(dsi->dev, "init: done\n");
+ 
+ 	return 0;
+ }
+@@ -1748,6 +1765,7 @@ static void samsung_dsim_atomic_pre_enable(struct drm_bridge *bridge,
+ 	if (dsi->state & DSIM_STATE_ENABLED)
+ 		return;
+ 
++	dev_info(dsi->dev, "pre_enable: resuming\n");
+ 	ret = pm_runtime_resume_and_get(dsi->dev);
+ 	if (ret < 0) {
+ 		dev_err(dsi->dev, "failed to enable DSI device.\n");
+@@ -1765,6 +1783,7 @@ static void samsung_dsim_atomic_pre_enable(struct drm_bridge *bridge,
+ 		if (ret)
+ 			return;
+ 	}
++	dev_info(dsi->dev, "pre_enable: done\n");
+ }
+ 
+ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
+@@ -1772,6 +1791,8 @@ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
+ {
+ 	struct samsung_dsim *dsi = bridge_to_dsi(bridge);
+ 
++	dev_info(dsi->dev, "enable: start\n");
++
+ 	/*
+ 	 * The cold init on exynos7870 has already programmed the display
+ 	 * mode and raised the SFR standby so that the panel init table
+@@ -1796,6 +1817,7 @@ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
+ 	samsung_dsim_set_display_enable(dsi, true);
+ 
+ 	dsi->state |= DSIM_STATE_VIDOUT_AVAILABLE;
++	dev_info(dsi->dev, "enable: standby up, vidout available\n");
+ }
+ 
+ static void samsung_dsim_atomic_disable(struct drm_bridge *bridge,
+@@ -1806,6 +1828,7 @@ static void samsung_dsim_atomic_disable(struct drm_bridge *bridge,
+ 	if (!(dsi->state & DSIM_STATE_ENABLED))
+ 		return;
+ 
++	dev_info(dsi->dev, "disable: standby down\n");
+ 	samsung_dsim_set_display_enable(dsi, false);
+ 	dsi->state &= ~DSIM_STATE_VIDOUT_AVAILABLE;
+ }
+@@ -1837,6 +1860,7 @@ static void samsung_dsim_atomic_post_disable(struct drm_bridge *bridge,
+ 	reg &= ~BIT(driver_data->tx_req_hsclk_bit);
+ 	samsung_dsim_write(dsi, DSIM_CLKCTRL_REG, reg);
+ 
++	dev_info(dsi->dev, "post_disable: hsclk request dropped, suspending\n");
+ 	dsi->state &= ~DSIM_STATE_ENABLED;
+ 	pm_runtime_put_sync(dsi->dev);
+ }
+@@ -2397,6 +2421,7 @@ static int samsung_dsim_suspend(struct device *dev)
+ 	const struct samsung_dsim_driver_data *driver_data = dsi->driver_data;
+ 	int ret;
+ 
++	dev_info(dsi->dev, "suspend: start (state %#x)\n", dsi->state);
+ 	usleep_range(10000, 20000);
+ 
+ 	if (dsi->state & DSIM_STATE_INITIALIZED) {
+@@ -2417,6 +2442,8 @@ static int samsung_dsim_suspend(struct device *dev)
+ 	if (ret < 0)
+ 		dev_err(dsi->dev, "cannot disable regulators %d\n", ret);
+ 
++	dev_info(dsi->dev, "suspend: done, clocks and phy off\n");
++
+ 	return 0;
+ }
+ 
+@@ -2442,6 +2469,8 @@ static int samsung_dsim_resume(struct device *dev)
+ 		goto err_clk;
+ 	}
+ 
++	dev_info(dsi->dev, "resume: regulators, clocks and phy on\n");
++
+ 	return 0;
+ 
+ err_clk:
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index f80f2126f0..5e48dc559a 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -628,6 +628,7 @@ static void decon_start_scanout(struct decon_context *ctx)
+ 	writel(val, ctx->regs + DECON_UPDATE);
+ 
+ 	ctx->scanout_on = true;
++	dev_info(ctx->dev, "scanout started\n");
+ }
+ 
+ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
+@@ -728,6 +729,7 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
+ 	struct decon_context *ctx = crtc->ctx;
+ 	int ret;
+ 
++	dev_info(ctx->dev, "atomic_enable: resuming\n");
+ 	ret = pm_runtime_resume_and_get(ctx->dev);
+ 	if (ret < 0) {
+ 		DRM_DEV_ERROR(ctx->dev, "failed to enable DECON device.\n");
+@@ -735,6 +737,7 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
+ 	}
+ 
+ 	decon_init(ctx);
++	dev_info(ctx->dev, "atomic_enable: stopped, reset, initialised\n");
+ 
+ 	/* if vblank was enabled status, enable it again. */
+ 	if (test_and_clear_bit(0, &ctx->irq_flags))
+@@ -743,6 +746,7 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
+ 	ctx->scanout_on = false;
+ 
+ 	decon_commit(ctx->crtc);
++	dev_info(ctx->dev, "atomic_enable: timing set, scanout off\n");
+ }
+ 
+ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
+@@ -760,6 +764,8 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
+ 
+ 	ctx->scanout_on = false;
+ 
++	dev_info(ctx->dev, "atomic_disable: planes off, VIDCON0 %#x, suspending\n",
++		 readl(ctx->regs + VIDCON0));
+ 	pm_runtime_put_sync(ctx->dev);
+ }
+ 
+-- 
+2.47.3
+

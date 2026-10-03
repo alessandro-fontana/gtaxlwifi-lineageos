@@ -1,0 +1,99 @@
+From adc2b0471270f5ebafba9aaa94fc426b84c62678 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 11:21:28 +0200
+Subject: [PATCH] media: s5p-mfc: implement TRY_DECODER_CMD, TRY_ENCODER_CMD
+ and DEC_CMD_START
+
+Clients of the stateful codec API probe the drain command with the TRY
+variant (Android's v4l2_codec2 refuses a device that does not answer it)
+and resume after a drain with V4L2_DEC_CMD_START, which the decoder did
+not accept: return the instance from the finished state to running.
+
+---
+ .../platform/samsung/s5p-mfc/s5p_mfc_dec.c    | 27 +++++++++++++++++++
+ .../platform/samsung/s5p-mfc/s5p_mfc_enc.c    | 10 +++++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+index afd28beabf..4d3282107a 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+@@ -853,6 +853,18 @@ static int vidioc_g_selection(struct file *file, void *priv,
+ 	return 0;
+ }
+ 
++static int vidioc_try_decoder_cmd(struct file *file, void *priv,
++				  struct v4l2_decoder_cmd *cmd)
++{
++	switch (cmd->cmd) {
++	case V4L2_DEC_CMD_STOP:
++	case V4L2_DEC_CMD_START:
++		return cmd->flags ? -EINVAL : 0;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static int vidioc_decoder_cmd(struct file *file, void *priv,
+ 			      struct v4l2_decoder_cmd *cmd)
+ {
+@@ -888,6 +900,20 @@ static int vidioc_decoder_cmd(struct file *file, void *priv,
+ 			spin_unlock_irqrestore(&dev->irqlock, flags);
+ 		}
+ 		break;
++	case V4L2_DEC_CMD_START:
++		/*
++		 * Resume after a drain (V4L2 stateful decoder API): the
++		 * instance was left finished once the last frame came out.
++		 */
++		if (cmd->flags != 0)
++			return -EINVAL;
++
++		spin_lock_irqsave(&dev->irqlock, flags);
++		if (ctx->state == MFCINST_FINISHED ||
++		    ctx->state == MFCINST_FINISHING)
++			ctx->state = MFCINST_RUNNING;
++		spin_unlock_irqrestore(&dev->irqlock, flags);
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -928,6 +954,7 @@ static const struct v4l2_ioctl_ops s5p_mfc_dec_ioctl_ops = {
+ 	.vidioc_streamoff = vidioc_streamoff,
+ 	.vidioc_g_selection = vidioc_g_selection,
+ 	.vidioc_decoder_cmd = vidioc_decoder_cmd,
++	.vidioc_try_decoder_cmd = vidioc_try_decoder_cmd,
+ 	.vidioc_subscribe_event = vidioc_subscribe_event,
+ 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+ };
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
+index 3f8701e561..699880d194 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
+@@ -2315,6 +2315,15 @@ static int vidioc_g_parm(struct file *file, void *priv,
+ 	return 0;
+ }
+ 
++static int vidioc_try_encoder_cmd(struct file *file, void *priv,
++				  struct v4l2_encoder_cmd *cmd)
++{
++	if (cmd->cmd != V4L2_ENC_CMD_STOP)
++		return -EINVAL;
++
++	return cmd->flags ? -EINVAL : 0;
++}
++
+ static int vidioc_encoder_cmd(struct file *file, void *priv,
+ 			      struct v4l2_encoder_cmd *cmd)
+ {
+@@ -2388,6 +2397,7 @@ static const struct v4l2_ioctl_ops s5p_mfc_enc_ioctl_ops = {
+ 	.vidioc_s_parm = vidioc_s_parm,
+ 	.vidioc_g_parm = vidioc_g_parm,
+ 	.vidioc_encoder_cmd = vidioc_encoder_cmd,
++	.vidioc_try_encoder_cmd = vidioc_try_encoder_cmd,
+ 	.vidioc_subscribe_event = vidioc_subscribe_event,
+ 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+ };
+-- 
+2.47.3
+

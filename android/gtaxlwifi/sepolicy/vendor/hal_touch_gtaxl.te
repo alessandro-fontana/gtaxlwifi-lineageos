@@ -1,0 +1,13 @@
+# This tablet's vendor.lineage.touch HAL (§50.9).
+#
+# The domain is NOT ours: hal_lineage_touch_default, its _exec type, the
+# transition from init and the IKeySwapper/default entry in service_contexts
+# are already in device/lineage/sepolicy/common/{vendor,dynamic}, which are
+# in BOARD_VENDOR_SEPOLICY_DIRS. Only the one thing LineageOS cannot know is
+# needed here: where, on this hardware, the node to write is.
+#
+# It exposes IKeySwapper and IKeyDisabler (§50.9, §52): the on-screen bar is
+# there, and "Enable on-screen nav bar" turns the two capacitive keys off.
+
+allow hal_lineage_touch_default sysfs_touch_gtaxl:dir search;
+allow hal_lineage_touch_default sysfs_touch_gtaxl:file rw_file_perms;

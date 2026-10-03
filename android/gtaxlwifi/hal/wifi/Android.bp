@@ -1,0 +1,33 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// Vendor library for AOSP's default Wi-Fi HAL on gtaxlwifi (§53).
+// android.hardware.wifi-service finds it through the descriptor below.
+
+cc_library_shared {
+    name: "libwifi-hal-gtaxl",
+    vendor: true,
+    compile_multilib: "first",
+    srcs: ["wifi_hal_gtaxl.cpp"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    header_libs: ["wifi_legacy_headers"],
+    shared_libs: [
+        "liblog",
+        "libnl",
+    ],
+    required: ["wifi-vendor-hal-gtaxl.xml"],
+}
+
+prebuilt_etc {
+    name: "wifi-vendor-hal-gtaxl.xml",
+    src: "wifi-vendor-hal-gtaxl.xml",
+    sub_dir: "wifi/vendor_hals",
+    vendor: true,
+}

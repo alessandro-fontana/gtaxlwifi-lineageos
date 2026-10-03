@@ -1,0 +1,12 @@
+#
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# If the graphics allocator dies and restarts, the processes using it that
+# are not restarted stay bound to the dead binder: every allocation fails
+# with EX_TRANSACTION_FAILED (-129) until they restart too. Its .rc only
+# restarts surfaceflinger; here the codec and camera services are restarted
+# (§58.8: recording stuck after an allocator crash).
+on property:init.svc.vendor.graphics.allocator.minigbm_upstream=restarting
+    restart android-hardware-media-c2-v4l2-hal
+    restart vendor.camera.provider-libcamera

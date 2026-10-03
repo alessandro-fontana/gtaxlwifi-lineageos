@@ -1,0 +1,261 @@
+From 558a477962aaf3aa5dbb904daa28ad581cdc5491 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:53 +0000
+Subject: [PATCH] ASoC: samsung: add gtaxl RT5659 machine driver
+
+Sound card for the Samsung Galaxy Tab A 10.1 (2016): a single DAI
+link with two codecs, the s1402x mixer AP0 interface and the RT5659
+AIF1, since the codec is wired to the mixer's AMP port.
+
+Clocking follows the vendor universal7870-rt5659.c: CPU as clock
+provider, 512fs/32fs at 48 kHz and 128fs/64fs at 192 kHz.  Unlike the
+vendor driver the codec PLL1 is always referenced to BCLK1, removing
+the dependency on the PMU CLKOUT MCLK pad which is not yet modelled;
+coherency is guaranteed by construction.
+
+The vendor SAMSUNG_I2S_RCLKSRC_1 and SAMSUNG_I2S_DIV_RCLK calls are
+dropped: in the board DT i2s_opclk0 and i2s_opclk1 point at the same
+CMU gate, and mainline sets RFS through the CDCLK sysclk argument.
+
+Downstream reference: sound/soc/samsung/universal7870-rt5659.c
+(LineageOS 21, kernel/samsung/exynos7870).
+---
+ sound/soc/samsung/gtaxl_rt5659.c | 226 +++++++++++++++++++++++++++++++
+ 1 file changed, 226 insertions(+)
+ create mode 100644 sound/soc/samsung/gtaxl_rt5659.c
+
+diff --git a/sound/soc/samsung/gtaxl_rt5659.c b/sound/soc/samsung/gtaxl_rt5659.c
+new file mode 100644
+index 0000000000..da2c20f160
+--- /dev/null
++++ b/sound/soc/samsung/gtaxl_rt5659.c
+@@ -0,0 +1,226 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ASoC machine driver for the Samsung Galaxy Tab A 10.1 (2016),
++ * "gtaxlwifi": Exynos 7870 I2S0 -> s1402x audio mixer -> RT5659.
++ *
++ * The codec hangs off the mixer's AMP port, so both the mixer's AP0
++ * DAI and the codec's AIF1 sit as codecs on the same DAI link.  The
++ * clocking recipe follows the vendor universal7870-rt5659.c:
++ *
++ *   48 kHz:  RCLK = 512fs (24.576 MHz), BCLK = 32fs
++ *   192 kHz: RCLK = 128fs (49.152 MHz), BCLK = 64fs
++ *
++ * with the CPU as clock provider.  Unlike the vendor driver, which
++ * feeds the codec PLL1 from a 26 MHz MCLK at 48 kHz, PLL1 is always
++ * fed from BCLK1 here: it removes the dependency on the PMU CLKOUT
++ * pad (not yet modelled) at the price of nothing, since clock
++ * coherency is guaranteed by construction when the reference is the
++ * bus clock itself.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#include "i2s.h"
++#include "../codecs/rt5659.h"
++
++#define GTAXL_RFS_48KHZ		512
++#define GTAXL_BFS_48KHZ		32
++#define GTAXL_PLL_48KHZ		24576000U
++#define GTAXL_RFS_192KHZ	128
++#define GTAXL_BFS_192KHZ	64
++#define GTAXL_PLL_192KHZ	49152000U
++
++static int gtaxl_aif1_hw_params(struct snd_pcm_substream *substream,
++				struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *amixer_dai = snd_soc_rtd_to_codec(rtd, 0);
++	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 1);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	unsigned int rate = params_rate(params);
++	unsigned int rfs, bfs, codec_pll, bclk;
++	int ret;
++
++	switch (rate) {
++	case 48000:
++		rfs = GTAXL_RFS_48KHZ;
++		bfs = GTAXL_BFS_48KHZ;
++		codec_pll = GTAXL_PLL_48KHZ;
++		break;
++	case 192000:
++		rfs = GTAXL_RFS_192KHZ;
++		bfs = GTAXL_BFS_192KHZ;
++		codec_pll = GTAXL_PLL_192KHZ;
++		break;
++	default:
++		dev_err(rtd->card->dev, "unsupported rate %u\n", rate);
++		return -EINVAL;
++	}
++
++	/* CPU: CDCLK out at rfs, root clock from CMU, BCLK divider */
++	ret = snd_soc_dai_set_sysclk(cpu_dai, SAMSUNG_I2S_CDCLK,
++				     rfs, SND_SOC_CLOCK_OUT);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set CDCLK: %d\n", ret);
++		return ret;
++	}
++
++	ret = snd_soc_dai_set_sysclk(cpu_dai, SAMSUNG_I2S_OPCLK,
++				     0, SAMSUNG_I2S_OPCLK_CDCLK_OUT);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set OPCLK: %d\n", ret);
++		return ret;
++	}
++
++	ret = snd_soc_dai_set_clkdiv(cpu_dai, SAMSUNG_I2S_DIV_BCLK, bfs);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set BCLK div: %d\n", ret);
++		return ret;
++	}
++
++	/* Mixer: XFS follows the bus BCLK ratio */
++	ret = snd_soc_dai_set_bclk_ratio(amixer_dai, bfs);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set mixer ratio: %d\n",
++			ret);
++		return ret;
++	}
++
++	/* Codec: PLL1 from BCLK1, SYSCLK from PLL1 */
++	bclk = rate * bfs;
++	ret = snd_soc_dai_set_pll(codec_dai, 0, RT5659_PLL1_S_BCLK1,
++				  bclk, codec_pll);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set codec PLL: %d\n", ret);
++		return ret;
++	}
++
++	ret = snd_soc_dai_set_sysclk(codec_dai, RT5659_SCLK_S_PLL1,
++				     codec_pll, SND_SOC_CLOCK_IN);
++	if (ret < 0) {
++		dev_err(rtd->card->dev, "failed to set codec sysclk: %d\n",
++			ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static const struct snd_soc_ops gtaxl_aif1_ops = {
++	.hw_params = gtaxl_aif1_hw_params,
++};
++
++static const struct snd_kcontrol_new gtaxl_controls[] = {
++	SOC_DAPM_PIN_SWITCH("SPK"),
++	SOC_DAPM_PIN_SWITCH("HP"),
++	SOC_DAPM_PIN_SWITCH("RCV"),
++	SOC_DAPM_PIN_SWITCH("Main Mic"),
++	SOC_DAPM_PIN_SWITCH("Headset Mic"),
++};
++
++static const struct snd_soc_dapm_widget gtaxl_dapm_widgets[] = {
++	SND_SOC_DAPM_SPK("SPK", NULL),
++	SND_SOC_DAPM_HP("HP", NULL),
++	SND_SOC_DAPM_SPK("RCV", NULL),
++	SND_SOC_DAPM_MIC("Main Mic", NULL),
++	SND_SOC_DAPM_MIC("Headset Mic", NULL),
++};
++
++SND_SOC_DAILINK_DEFS(aif1,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "AP0"),
++			   COMP_CODEC(NULL, "rt5659-aif1")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static struct snd_soc_dai_link gtaxl_dai_links[] = {
++	{
++		.name		= "RT5659 AIF1",
++		.stream_name	= "HiFi Primary",
++		.ops		= &gtaxl_aif1_ops,
++		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
++				  SND_SOC_DAIFMT_CBC_CFC,
++		SND_SOC_DAILINK_REG(aif1),
++	},
++};
++
++static struct snd_soc_card gtaxl_card = {
++	.owner			= THIS_MODULE,
++	.dai_link		= gtaxl_dai_links,
++	.num_links		= ARRAY_SIZE(gtaxl_dai_links),
++	.controls		= gtaxl_controls,
++	.num_controls		= ARRAY_SIZE(gtaxl_controls),
++	.dapm_widgets		= gtaxl_dapm_widgets,
++	.num_dapm_widgets	= ARRAY_SIZE(gtaxl_dapm_widgets),
++	.fully_routed		= true,
++};
++
++static int gtaxl_audio_probe(struct platform_device *pdev)
++{
++	struct device_node *cpu_node = NULL, *mixer_node = NULL;
++	struct device_node *codec_node = NULL;
++	struct device *dev = &pdev->dev;
++	struct snd_soc_card *card = &gtaxl_card;
++	struct snd_soc_dai_link *link = &gtaxl_dai_links[0];
++	int ret;
++
++	card->dev = dev;
++
++	ret = snd_soc_of_parse_card_name(card, "model");
++	if (ret < 0) {
++		dev_err(dev, "card name is not specified\n");
++		return ret;
++	}
++
++	ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
++	if (ret < 0) {
++		dev_err(dev, "audio routing is not specified or invalid\n");
++		return ret;
++	}
++
++	cpu_node = of_parse_phandle(dev->of_node, "i2s-controller", 0);
++	mixer_node = of_parse_phandle(dev->of_node, "audio-mixer", 0);
++	codec_node = of_parse_phandle(dev->of_node, "audio-codec", 0);
++	if (!cpu_node || !mixer_node || !codec_node) {
++		dev_err(dev, "i2s-controller, audio-mixer and audio-codec properties are all required\n");
++		ret = -EINVAL;
++		goto out_put;
++	}
++
++	link->cpus->of_node = cpu_node;
++	link->platforms->of_node = cpu_node;
++	link->codecs[0].of_node = mixer_node;
++	link->codecs[1].of_node = codec_node;
++
++	ret = devm_snd_soc_register_card(dev, card);
++	if (ret < 0)
++		dev_err_probe(dev, ret, "failed to register card\n");
++
++out_put:
++	of_node_put(cpu_node);
++	of_node_put(mixer_node);
++	of_node_put(codec_node);
++
++	return ret;
++}
++
++static const struct of_device_id gtaxl_audio_of_match[] = {
++	{ .compatible = "samsung,gtaxl-rt5659" },
++	{ },
++};
++MODULE_DEVICE_TABLE(of, gtaxl_audio_of_match);
++
++static struct platform_driver gtaxl_audio_driver = {
++	.driver = {
++		.name		= "gtaxl-audio",
++		.of_match_table	= gtaxl_audio_of_match,
++	},
++	.probe = gtaxl_audio_probe,
++};
++module_platform_driver(gtaxl_audio_driver);
++
++MODULE_DESCRIPTION("ALSA SoC Samsung gtaxl RT5659 machine driver");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

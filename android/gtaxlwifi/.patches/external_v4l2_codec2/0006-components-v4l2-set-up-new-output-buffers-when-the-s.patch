@@ -1,0 +1,141 @@
+From 34ca9eb924958c68689d1746ed7f0838833679e9 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 13:45:05 +0200
+Subject: [PATCH] components, v4l2: set up new output buffers when the surface
+ changes
+
+When a client moves the decoder to another surface (MediaCodec
+setOutputSurface, e.g. a gallery reusing one decoder for the videos of
+its pages), the pictures queued to the old surface never come back to
+the block pool, and the new surface only hands out buffers the
+VideoFramePool has never seen. The pool dropped them forever, waiting
+for known ones, and the decoder starved.
+
+After a flush, where a client moves to another surface, the pool
+watches whether known buffers still come back. If only unknown ones
+arrive for about half a second, it reports that the buffer set changed,
+and V4L2Decoder sets up the output queue again, as for a resolution
+change. The watch ends at the first known buffer, so a seek or a pause
+does not trigger it.
+
+Change-Id: I199c827b4b7da6aba202741c2b4443d801d16347
+---
+ components/VideoFramePool.cpp                 | 25 +++++++++++++++++++
+ .../v4l2_codec2/components/VideoFramePool.h   | 15 +++++++++++
+ v4l2/V4L2Decoder.cpp                          | 12 +++++++++
+ 3 files changed, 52 insertions(+)
+
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index ae5cd34..466d6b9 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -175,6 +175,13 @@ bool VideoFramePool::shouldDropBuffer(uint32_t bufferId) {
+     return true;
+ }
+ 
++void VideoFramePool::watchBufferSet() {
++    ALOGV("%s()", __func__);
++    ALOG_ASSERT(mClientTaskRunner->RunsTasksInCurrentSequence());
++
++    mWatchBufferSet = true;
++}
++
+ bool VideoFramePool::getVideoFrame(GetVideoFrameCB cb) {
+     ALOGV("%s()", __func__);
+     ALOG_ASSERT(mClientTaskRunner->RunsTasksInCurrentSequence());
+@@ -252,11 +259,29 @@ void VideoFramePool::getVideoFrameTask() {
+             ALOGV("%s(): Got buffer with id = %u", __func__, *bufferId);
+ 
+             if (shouldDropBuffer(*bufferId)) {
++                // About half a second of retries, with the backoff below.
++                constexpr size_t kUnknownBuffersLimit = 30;
++
+                 // We drop buffer, since we got more then needed.
+                 ALOGV("%s(): Dropping allocated buffer with id = %u", __func__, *bufferId);
+                 bufferId = std::nullopt;
+                 block.reset();
+                 err = C2_TIMED_OUT;
++
++                if (mWatchBufferSet && ++mUnknownInARow >= kUnknownBuffersLimit) {
++                    ALOGI("%s(): only unknown buffers since the flush, the buffer set changed",
++                          __func__);
++                    mWatchBufferSet = false;
++                    mUnknownInARow = 0;
++                    mBufferSetChanged = true;
++                    mClientTaskRunner->PostTask(
++                            FROM_HERE, ::base::BindOnce(&VideoFramePool::onVideoFrameReady,
++                                                        mClientWeakThis, std::nullopt));
++                    return;
++                }
++            } else {
++                mWatchBufferSet = false;
++                mUnknownInARow = 0;
+             }
+         }
+     }
+diff --git a/components/include/v4l2_codec2/components/VideoFramePool.h b/components/include/v4l2_codec2/components/VideoFramePool.h
+index 6bebc37..c2cfc20 100644
+--- a/components/include/v4l2_codec2/components/VideoFramePool.h
++++ b/components/include/v4l2_codec2/components/VideoFramePool.h
+@@ -42,6 +42,16 @@ public:
+     // be dropped directly.
+     bool getVideoFrame(GetVideoFrameCB cb);
+ 
++    // Starts watching whether the known buffers still come back, which
++    // they stop doing when the client moves to another surface: the
++    // pictures queued to the old one never return, and the new one only
++    // hands out buffers the pool has never seen. The watch ends at the
++    // first known buffer. If only unknown buffers arrive for a while,
++    // |cb| of getVideoFrame() gets nullopt and bufferSetChanged() is true:
++    // the client has to set up a new pool.
++    void watchBufferSet();
++    bool bufferSetChanged() const { return mBufferSetChanged; }
++
+ private:
+     // |blockPool| is the C2BlockPool that we fetch graphic blocks from.
+     // |maxBufferCount| maximum number of buffer that should should provide to client
+@@ -74,6 +84,11 @@ private:
+     // Contains known buffer ids that are valid for the pool.
+     std::set<uint32_t> mBuffers;
+ 
++    // See watchBufferSet(). |mUnknownInARow| is only used on the fetch thread.
++    std::atomic<bool> mWatchBufferSet{false};
++    std::atomic<bool> mBufferSetChanged{false};
++    size_t mUnknownInARow = 0;
++
+     const ui::Size mSize;
+     const HalPixelFormat mPixelFormat;
+     const C2MemoryUsage mMemoryUsage;
+diff --git a/v4l2/V4L2Decoder.cpp b/v4l2/V4L2Decoder.cpp
+index 09799eb..eb4ad7e 100644
+--- a/v4l2/V4L2Decoder.cpp
++++ b/v4l2/V4L2Decoder.cpp
+@@ -586,6 +586,8 @@ void V4L2Decoder::flush() {
+     // a buffer is DQBUF from output queue. Now all the buffers are dropped at mOutputQueue, we
+     // have to trigger tryFetchVideoFrame() here.
+     if (mVideoFramePool) {
++        // A flush is also where a client moves to another surface.
++        mVideoFramePool->watchBufferSet();
+         tryFetchVideoFrame();
+     }
+ 
+@@ -847,6 +849,16 @@ void V4L2Decoder::onVideoFrameReady(
+     ALOG_ASSERT(mTaskRunner->RunsTasksInCurrentSequence());
+ 
+     if (!frameWithBlockId) {
++        if (mVideoFramePool && mVideoFramePool->bufferSetChanged()) {
++            // The client moved to another surface (see
++            // VideoFramePool::watchBufferSet()): set up the output queue
++            // again with the buffers of the new one.
++            ALOGI("%s(): the output buffer set changed, reallocating", __func__);
++            if (!changeResolution()) {
++                onError();
++            }
++            return;
++        }
+         ALOGE("Got nullptr VideoFrame.");
+         onError();
+         return;
+-- 
+2.47.3
+

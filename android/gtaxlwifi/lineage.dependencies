@@ -1,0 +1,62 @@
+[
+  {
+    "repository": "android_device_mainline_generic",
+    "target_path": "device/mainline/generic"
+  },
+  {
+    "repository": "android_device_mainline_common",
+    "target_path": "device/mainline/common"
+  },
+  {
+    "repository": "android_hardware_mainline_common",
+    "target_path": "hardware/mainline/common"
+  },
+  {
+    "repository": "android_kernel_mainline_configs",
+    "target_path": "kernel/mainline/configs"
+  },
+  {
+    "repository": "android_external_minigbm-upstream",
+    "target_path": "external/minigbm-upstream"
+  },
+  {
+    "repository": "android_external_drm_hwcomposer-upstream",
+    "target_path": "external/drm_hwcomposer-upstream"
+  },
+  {
+    "repository": "android_external_mesa",
+    "target_path": "external/mesa"
+  },
+  {
+    "repository": "android_external_linux-firmware-mainline",
+    "target_path": "external/linux-firmware-mainline"
+  },
+  {
+    "repository": "android_hardware_intel_sensors-iio",
+    "target_path": "hardware/intel/sensors-iio"
+  },
+  {
+    "repository": "android_hardware_linaro_libpm",
+    "target_path": "hardware/linaro/libpm"
+  },
+  {
+    "repository": "android_external_tinyhal",
+    "target_path": "external/tinyhal"
+  },
+  {
+    "repository": "android_prebuilts_bootmgr",
+    "target_path": "prebuilts/bootmgr"
+  },
+  {
+    "repository": "android_external_libdisplay-info-upstream",
+    "target_path": "external/libdisplay-info-upstream"
+  },
+  {
+    "repository": "android_prebuilts_mesa-build-dep",
+    "target_path": "prebuilts/mesa-build-dep"
+  },
+  {
+    "repository": "android_kernel_samsung_exynos7870",
+    "target_path": "kernel/samsung/exynos7870"
+  }
+]

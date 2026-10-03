@@ -1,0 +1,636 @@
+diff --git a/private/access_vectors b/private/access_vectors
+index a49299e..03eed46 100644
+--- a/private/access_vectors
++++ b/private/access_vectors
+@@ -186,6 +186,13 @@ inherits file
+ 
+ class anon_inode
+ inherits file
++class memfd_file
++inherits file
++{
++	execute_no_trans
++	entrypoint
++}
++
+ 
+ class lnk_file
+ inherits file
+diff --git a/private/app.te b/private/app.te
+index b971625..8d73ccf 100644
+--- a/private/app.te
++++ b/private/app.te
+@@ -214,6 +214,7 @@ allow appdomain app_zygote:fd use;
+ 
+ # app_zygote creates memfds and shares them via fork(2) or binder IPC
+ allow appdomain app_zygote_tmpfs:file { read write getattr map };
++allow appdomain app_zygote:memfd_file { read write getattr map };
+ 
+ # gdbserver for ndk-gdb reads the zygote.
+ # valgrind needs mmap exec for zygote
+@@ -492,6 +493,7 @@ allow {appdomain -isolated_app_all} hal_tv_tuner_server:fd use;
+ 
+ # Allow app to access shared memory created by PowerHAL for FMQ use
+ allow { appdomain -isolated_app_all } hal_power_server:fd use;
++allow { appdomain -isolated_app_all } hal_power_server:memfd_file { getattr map read write };
+ 
+ # RenderScript always-passthrough HAL
+ allow { appdomain -isolated_app_all } hal_renderscript_hwservice:hwservice_manager find;
+@@ -531,7 +533,25 @@ allow appdomain dropbox_data_file:file { getattr read };
+ # Read tmpfs types from these processes.
+ allow appdomain audioserver_tmpfs:file { getattr map read write };
+ allow appdomain system_server_tmpfs:file { getattr map read write };
++allow appdomain audioserver:memfd_file { getattr map read write };
++allow appdomain system_server:memfd_file { getattr map read write };
+ allow appdomain zygote_tmpfs:file { map read };
++allow appdomain zygote:memfd_file { map read };
++allow appdomain hal_codec2:memfd_file { getattr map read write };
++allow appdomain cameraserver:memfd_file { getattr map read write };
++allow appdomain mediaextractor:memfd_file { getattr map read write };
++allow appdomain mediaserver:memfd_file { getattr map read write };
++allow appdomain hal_contexthub:memfd_file { getattr read write map };
++allow {
++  appdomain
++  -platform_app
++  -priv_app
++} domain:memfd_file ioctl;
++allowxperm {
++  appdomain
++  -platform_app
++  -priv_app
++} domain:memfd_file ioctl ashmem_ioctls;
+ 
+ ###
+ ### Neverallow rules
+diff --git a/private/app_zygote.te b/private/app_zygote.te
+index b51f633..97f7ddb 100644
+--- a/private/app_zygote.te
++++ b/private/app_zygote.te
+@@ -22,6 +22,7 @@ allow app_zygote self:process execmem;
+ 
+ # Allow exec mapping from tmpfs (memfds) for binary translation
+ allow app_zygote app_zygote_tmpfs:file execute;
++allow app_zygote app_zygote:memfd_file execute;
+ 
+ # Allow app_zygote to stat the files that it opens. It must
+ # be able to inspect them so that it can reopen them on fork
+@@ -46,6 +47,7 @@ selinux_check_access(app_zygote)
+ 
+ # Read and inspect temporary files managed by zygote.
+ allow app_zygote zygote_tmpfs:file { read getattr };
++allow app_zygote zygote:memfd_file { read getattr };
+ 
+ ######
+ ###### Policy below is shared with regular zygote-spawned apps
+diff --git a/private/artd.te b/private/artd.te
+index 20e0343..5bffe8e 100644
+--- a/private/artd.te
++++ b/private/artd.te
+@@ -148,6 +148,7 @@ r_dir_file(artd, dex2oat);
+ # artd needs to reopen a memfd with readonly in order to pass it to subprocesses
+ # that don't have write permissions on memfds.
+ allow artd artd_tmpfs:file open;
++allow artd artd:memfd_file open;
+ 
+ # Allow artd and its subprocesses to redirect standard streams to system server.
+ allow { artd artd_subprocess_type } system_server:fd use;
+diff --git a/private/audioserver.te b/private/audioserver.te
+index 90f4c94..2232505 100644
+--- a/private/audioserver.te
++++ b/private/audioserver.te
+@@ -85,6 +85,8 @@ allow audioserver hal_audio_server:process signal;
+ # Allow audioserver to access sensorservice.
+ allow audioserver sensorservice_service:service_manager find;
+ allow audioserver system_server:unix_stream_socket { read write };
++allow audioserver system_server:memfd_file { getattr map read write };
++allow audioserver appdomain:memfd_file { getattr map read write };
+ 
+ # Allow using wake locks
+ wakelock_use(audioserver)
+diff --git a/private/domain.te b/private/domain.te
+index bdc185c..a265b3c 100644
+--- a/private/domain.te
++++ b/private/domain.te
+@@ -36,6 +36,7 @@ userdebug_or_eng(`
+   allow domain su:fd use;
+   allow domain su:unix_stream_socket { connectto getattr getopt read write shutdown };
+   allow domain su:unix_dgram_socket sendto;
++  allow domain su:memfd_file { getattr read write map };
+ 
+   allow { domain -init } su:binder { call transfer };
+ 
+@@ -85,6 +86,7 @@ allow domain ashmem_libcutils_device:chr_file rw_file_perms;
+ # to tmpfs files in general, or tmpfs files associated with specific domains.
+ # This is in contrast to ashmem, where all domains could access ashmem fds.
+ #
++allow domain self:memfd_file { create read write getattr map };
+ # To allow for a smoother transition from ashmem to memfd, grant the
+ # ability for processes to relabel tmpfs files to ashmem_compat_memfd,
+ # which will have similar access control as ashmem. The files are relabeled
+@@ -1651,6 +1653,18 @@ neverallow {
+   -untrusted_app_25
+   -untrusted_app_27
+ } ashmem_device:chr_file open;
++neverallow {
++  domain
++  -appdomain
++  -isolated_app_all
++} domain:memfd_file ioctl;
++neverallowxperm {
++  domain
++  -appdomain
++  -isolated_app_all
++} domain:memfd_file ioctl ashmem_ioctls;
++neverallow { platform_app priv_app } domain:memfd_file ioctl;
++neverallowxperm { platform_app priv_app } domain:memfd_file ioctl ashmem_ioctls;
+ 
+ neverallow { domain -traced_probes -init -vendor_init } debugfs_tracing_printk_formats:file *;
+ 
+diff --git a/private/dumpstate.te b/private/dumpstate.te
+index 7bba4c1..fdeccda 100644
+--- a/private/dumpstate.te
++++ b/private/dumpstate.te
+@@ -156,6 +156,7 @@ allow dumpstate perfetto_traces_bugreport_data_file:file { r_file_perms unlink }
+ # zip file. These rules are to allow perfetto.te to inherit dumpstate's
+ # /dev/null.
+ allow perfetto dumpstate_tmpfs:file rw_file_perms;
++allow perfetto dumpstate:memfd_file { getattr open read lock map watch watch_reads w_file_perms };
+ allow perfetto dumpstate:fd use;
+ 
+ # system_dlkm_file for /system_dlkm partition
+diff --git a/private/gsid.te b/private/gsid.te
+index fc44141..2e4b4c8 100644
+--- a/private/gsid.te
++++ b/private/gsid.te
+@@ -81,6 +81,7 @@ allow gsid sdcard_block_device:blk_file r_file_perms;
+ # This is needed for FIBMAP unfortunately. Oddly FIEMAP does not carry this
+ # requirement, but the kernel does not implement FIEMAP support for VFAT.
+ allow gsid self:global_capability_class_set sys_rawio;
++allow gsid appdomain:memfd_file { read write getattr map };
+ 
+ # Allow rules for gsi_tool.
+ userdebug_or_eng(`
+diff --git a/private/hal_audio.te b/private/hal_audio.te
+index 237ffcd..33c6b21 100644
+--- a/private/hal_audio.te
++++ b/private/hal_audio.te
+@@ -24,6 +24,7 @@ allow hal_audio dumpstate:fifo_file write;
+ allow hal_audio_server appdomain:fd use;
+ # Allow sound trigger hal to access shared memory from system server.
+ allow hal_audio_server system_server_tmpfs:file { getattr map read };
++allow hal_audio_server system_server:memfd_file { getattr map read };
+ 
+ # allow self to set scheduler (and allows Binder RT PI)
+ allow hal_audio_server self:global_capability_class_set sys_nice;
+diff --git a/private/hal_graphics_composer.te b/private/hal_graphics_composer.te
+index 3250564..d21685d 100644
+--- a/private/hal_graphics_composer.te
++++ b/private/hal_graphics_composer.te
+@@ -2,7 +2,9 @@
+ binder_call(hal_graphics_composer_client, hal_graphics_composer_server)
+ binder_call(hal_graphics_composer_server, hal_graphics_composer_client)
+ allow hal_graphics_composer_client hal_graphics_composer_server_tmpfs:file { getattr map read write };
++allow hal_graphics_composer_client hal_graphics_composer_server:memfd_file { getattr map read write };
+ allow hal_graphics_composer_server hal_graphics_composer_client_tmpfs:file { getattr map read write };
++allow hal_graphics_composer_server hal_graphics_composer_client:memfd_file { getattr map read write };
+ 
+ hal_attribute_hwservice(hal_graphics_composer, hal_graphics_composer_hwservice)
+ 
+diff --git a/private/hal_neuralnetworks.te b/private/hal_neuralnetworks.te
+index c7049fd..f7c0377 100644
+--- a/private/hal_neuralnetworks.te
++++ b/private/hal_neuralnetworks.te
+@@ -25,6 +25,7 @@ allow hal_neuralnetworks_server storage_file:file { getattr map read };
+ 
+ # Allow NN HAL service to read a client-provided fd residing in /data/app/.
+ allow hal_neuralnetworks_server apk_data_file:file { getattr map read };
++allow hal_neuralnetworks_server appdomain:memfd_file { getattr read write map };
+ 
+ # Allow NN HAL client to check the ro.nnapi.extensions.deny_on_product
+ # property to determine whether to deny NNAPI extensions use for apps
+diff --git a/private/hal_sensors.te b/private/hal_sensors.te
+index 162a896..3373f6d 100644
+--- a/private/hal_sensors.te
++++ b/private/hal_sensors.te
+@@ -5,10 +5,12 @@ hal_attribute_hwservice(hal_sensors, hal_sensors_hwservice)
+ 
+ # Allow sensor hals to access ashmem memory allocated by apps
+ allow hal_sensors { appdomain -isolated_app }:fd use;
++allow hal_sensors { appdomain -isolated_app }:memfd_file { getattr read write map };
+ 
+ # Allow sensor hals to access ashmem memory allocated by android.hidl.allocator
+ # fd is passed in from framework sensorservice HAL.
+ allow hal_sensors hal_allocator:fd use;
++allow hal_sensors hal_allocator:memfd_file { getattr read write map };
+ 
+ # allow to run with real-time scheduling policy
+ allow hal_sensors self:global_capability_class_set sys_nice;
+diff --git a/private/incidentd.te b/private/incidentd.te
+index 11da9ea..becff6c 100644
+--- a/private/incidentd.te
++++ b/private/incidentd.te
+@@ -150,6 +150,7 @@ dontaudit incidentd dalvikcache_data_file:dir r_dir_perms;
+ dontaudit incidentd apex_module_data_file:dir r_dir_perms;
+ dontaudit incidentd apex_art_data_file:dir r_dir_perms;
+ dontaudit incidentd tmpfs:file rwx_file_perms;
++dontaudit incidentd domain:memfd_file rwx_file_perms;
+ 
+ # Allow incidentd to read /apex/apex-info-list.xml
+ allow incidentd apex_info_file:file r_file_perms;
+diff --git a/private/isolated_app.te b/private/isolated_app.te
+index 9d0fd73..322a504 100644
+--- a/private/isolated_app.te
++++ b/private/isolated_app.te
+@@ -34,3 +34,4 @@ allow isolated_app webview_zygote:process sigchld;
+ allow isolated_app webview_zygote:unix_dgram_socket write;
+ # Read system properties managed by webview_zygote.
+ allow isolated_app webview_zygote_tmpfs:file read;
++allow isolated_app webview_zygote:memfd_file read;
+diff --git a/private/isolated_app_all.te b/private/isolated_app_all.te
+index fe7b34a..b8566b8 100644
+--- a/private/isolated_app_all.te
++++ b/private/isolated_app_all.te
+@@ -35,6 +35,8 @@ dontaudit isolated_app_all shell_data_file:dir search;
+ 
+ # Allow to read, map (but not open) staged apks.
+ allow isolated_app_all { apk_tmp_file apk_private_tmp_file }:file { read getattr map };
++allow isolated_app_all domain:memfd_file ioctl;
++allowxperm isolated_app_all domain:memfd_file ioctl ashmem_ioctls;
+ 
+ #####
+ ##### Neverallow
+diff --git a/private/kernel.te b/private/kernel.te
+index a674b16..a786e99 100644
+--- a/private/kernel.te
++++ b/private/kernel.te
+@@ -167,6 +167,7 @@ allow kernel self:system firmware_load;
+ 
+ # required by VTS lidbm unit test
+ allow kernel appdomain_tmpfs:file { read write };
++allow kernel appdomain:memfd_file { read write };
+ 
+ # Allow first stage init to copy and then launch overlay_remounter
+ userdebug_or_eng(`
+diff --git a/private/mediaextractor.te b/private/mediaextractor.te
+index c800d89..bffca9f 100644
+--- a/private/mediaextractor.te
++++ b/private/mediaextractor.te
+@@ -5,6 +5,10 @@ tmpfs_domain(mediaextractor)
+ allow mediaextractor appdomain_tmpfs:file { getattr map read write };
+ allow mediaextractor mediaserver_tmpfs:file { getattr map read write };
+ allow mediaextractor system_server_tmpfs:file { getattr map read write };
++allow mediaextractor appdomain:memfd_file { getattr map read write };
++allow mediaextractor mediaserver:memfd_file { getattr map read write };
++allow mediaextractor mediatranscoding:memfd_file { getattr map read write };
++allow mediaextractor system_server:memfd_file { getattr map read write };
+ 
+ get_prop(mediaextractor, device_config_media_native_prop)
+ get_prop(mediaextractor, device_config_swcodec_native_prop)
+diff --git a/private/mediaprovider_app.te b/private/mediaprovider_app.te
+index 2ce5850..1b2e4fe 100644
+--- a/private/mediaprovider_app.te
++++ b/private/mediaprovider_app.te
+@@ -25,6 +25,7 @@ allow mediaprovider_app drmserver_service:service_manager find;
+ 
+ # Talk to the MediaServer service
+ allow mediaprovider_app mediaserver_service:service_manager find;
++allow mediaprovider_app mediaserver:memfd_file { getattr read write map };
+ 
+ # Talk to the AudioServer service
+ allow mediaprovider_app audioserver_service:service_manager find;
+diff --git a/private/mediaserver.te b/private/mediaserver.te
+index 0b20b29..0a01667 100644
+--- a/private/mediaserver.te
++++ b/private/mediaserver.te
+@@ -3,6 +3,9 @@ typeattribute mediaserver coredomain;
+ init_daemon_domain(mediaserver)
+ tmpfs_domain(mediaserver)
+ allow mediaserver appdomain_tmpfs:file { getattr map read write };
++allow mediaserver appdomain:memfd_file { getattr map read write };
++allow mediaserver audioserver:memfd_file { getattr map read write };
++allow mediaserver mediaextractor:memfd_file { getattr map read write };
+ 
+ # allocate and use graphic buffers
+ hal_client_domain(mediaserver, hal_graphics_allocator)
+diff --git a/private/mediaswcodec.te b/private/mediaswcodec.te
+index c96c9dd..472e0bc 100644
+--- a/private/mediaswcodec.te
++++ b/private/mediaswcodec.te
+@@ -22,6 +22,7 @@ crash_dump_fallback(mediaswcodec)
+ 
+ allow mediaswcodec dmabuf_system_heap_device:chr_file r_file_perms;
+ allow mediaswcodec dmabuf_system_secure_heap_device:chr_file r_file_perms;
++allow mediaswcodec appdomain:memfd_file { getattr read write map };
+ allow mediaswcodec gpu_device:chr_file rw_file_perms;
+ allow mediaswcodec gpu_device:dir r_dir_perms;
+ 
+diff --git a/private/mediatranscoding.te b/private/mediatranscoding.te
+index 829d948..0fee6e7 100644
+--- a/private/mediatranscoding.te
++++ b/private/mediatranscoding.te
+@@ -6,6 +6,7 @@ typeattribute mediatranscoding coredomain;
+ init_daemon_domain(mediatranscoding)
+ tmpfs_domain(mediatranscoding)
+ allow mediatranscoding appdomain_tmpfs:file { getattr map read write };
++allow mediatranscoding appdomain:memfd_file { getattr map read write };
+ 
+ binder_use(mediatranscoding)
+ binder_call(mediatranscoding, binderservicedomain)
+@@ -35,6 +36,7 @@ allow mediatranscoding media_rw_data_file:file { getattr read write };
+ allow mediatranscoding apk_data_file:file { getattr read };
+ allow mediatranscoding app_data_file:file { getattr read write };
+ allow mediatranscoding shell_data_file:file { getattr read write };
++allow mediatranscoding mediaextractor:memfd_file { getattr map read write };
+ 
+ # allow mediatranscoding service write permission to statsd socket
+ unix_socket_send(mediatranscoding, statsdw, statsd)
+diff --git a/private/mmd.te b/private/mmd.te
+index 7770865..8cf8018 100644
+--- a/private/mmd.te
++++ b/private/mmd.te
+@@ -42,3 +42,7 @@ binder_call(mmd, statsd)
+ # Allow mmd to send dump info to dumpstate.
+ allow mmd dumpstate:fd use;
+ allow mmd dumpstate:fifo_file { getattr write };
++allow mmd zygote:memfd_file write;
++allow mmd appdomain:memfd_file write;
++allow mmd system_server:memfd_file write;
++allow mmd gpu_device:memfd_file write;
+diff --git a/private/policy_capabilities b/private/policy_capabilities
+index 97f94d2..2a5d263 100644
+--- a/private/policy_capabilities
++++ b/private/policy_capabilities
+@@ -21,3 +21,6 @@ policycap nnp_nosuid_transition;
+ 
+ # Enable per-file labels in functionfs
+ policycap functionfs_seclabel;
++
++# Label memfds with the domain that creates them, memfd_file class (backport from A17).
++policycap memfd_class;
+diff --git a/private/profman.te b/private/profman.te
+index d1ce926..db21c1c 100644
+--- a/private/profman.te
++++ b/private/profman.te
+@@ -17,6 +17,7 @@ allow profman { artd installd }:fd use;
+ # profman needs to read the embedded profile that artd extracts from an APK,
+ # which is passed by a memfd.
+ allow profman artd_tmpfs:file { getattr read map lock };
++allow profman artd:memfd_file { getattr read map lock };
+ 
+ allow profman user_profile_data_file:file { getattr read write lock map };
+ 
+diff --git a/private/security_classes b/private/security_classes
+index 0537214..2ee3b4e 100644
+--- a/private/security_classes
++++ b/private/security_classes
+@@ -17,6 +17,7 @@ class filesystem
+ class file
+ class anon_inode
+ class dir
++class memfd_file
+ class fd
+ class lnk_file
+ class chr_file
+diff --git a/private/shell.te b/private/shell.te
+index 1a7e30a..3736395 100644
+--- a/private/shell.te
++++ b/private/shell.te
+@@ -249,6 +249,7 @@ allow shell shell_key:keystore2_key { delete rebind use get_info update };
+ # As this is test-only functionality, limit the use to debuggable builds
+ userdebug_or_eng(`
+   allow shell appdomain_tmpfs:file open;
++  allow shell appdomain:memfd_file open;
+ ')
+ 
+ # Allow shell to write db.log.detailed, db.log.slow_query_threshold*
+diff --git a/private/su.te b/private/su.te
+index fae9b98..25fd5ab 100644
+--- a/private/su.te
++++ b/private/su.te
+@@ -50,6 +50,7 @@ userdebug_or_eng(`
+   dontaudit su domain:filesystem *;
+   dontaudit su domain:dir *;
+   dontaudit su domain:lnk_file *;
++  dontaudit su domain:memfd_file *;
+   dontaudit su domain:{ fifo_file file } *;
+   dontaudit su domain:socket_class_set *;
+   dontaudit su domain:ipc_class_set *;
+diff --git a/private/surfaceflinger.te b/private/surfaceflinger.te
+index f4f64ce..ded5cf6 100644
+--- a/private/surfaceflinger.te
++++ b/private/surfaceflinger.te
+@@ -73,6 +73,7 @@ get_prop(surfaceflinger, device_config_surface_flinger_native_boot_prop)
+ # Use open files supplied by an app.
+ allow surfaceflinger appdomain:fd use;
+ allow surfaceflinger { app_data_file privapp_data_file }:file { read write };
++allow surfaceflinger appdomain:memfd_file { getattr map read write };
+ 
+ # Allow writing surface traces to /data/misc/wmtrace.
+ userdebug_or_eng(`
+diff --git a/private/system_server.te b/private/system_server.te
+index d85caed..4d98a75 100644
+--- a/private/system_server.te
++++ b/private/system_server.te
+@@ -24,6 +24,8 @@ type_transition system_server system_data_file:sock_file system_unsolzygote_sock
+ 
+ allow system_server zygote_tmpfs:file { map read write };
+ allow system_server appdomain_tmpfs:file { getattr map read write };
++allow system_server zygote:memfd_file { map read write };
++allow system_server appdomain:memfd_file { getattr map read write };
+ 
+ # For Incremental Service to check if incfs is available
+ allow system_server proc_filesystems:file r_file_perms;
+@@ -454,6 +456,7 @@ allow system_server audioserver:tcp_socket rw_socket_perms;
+ allow system_server audioserver:udp_socket rw_socket_perms;
+ allow system_server mediaserver:tcp_socket rw_socket_perms;
+ allow system_server mediaserver:udp_socket rw_socket_perms;
++allow system_server audioserver:memfd_file { getattr read write map };
+ 
+ # Use sockets received over binder from various services.
+ allow system_server mediadrmserver:tcp_socket rw_socket_perms;
+@@ -1527,10 +1530,12 @@ neverallow system_server { ashmem_device ashmem_libcutils_device }:chr_file exec
+ 
+ # TODO: deal with tmpfs_domain pub/priv split properly
+ neverallow system_server system_server_tmpfs:file execute;
++neverallow system_server system_server:memfd_file execute;
+ 
+ # Resources handed off by system_server_startup
+ allow system_server system_server_startup:fd use;
+ allow system_server system_server_startup_tmpfs:file { read write map };
++allow system_server system_server_startup:memfd_file { read write map };
+ allow system_server system_server_startup:unix_dgram_socket write;
+ 
+ # Allow system server to communicate to apexd
+@@ -1767,6 +1772,7 @@ allow system_server pre_reboot_dexopt_file:dir { getattr search };
+ # system_server needs to copy the new service-art.jar to a memfd and reopen it with the path
+ # /proc/self/fd/<fd> with a classloader.
+ allow system_server system_server_tmpfs:file open;
++allow system_server system_server:memfd_file open;
+ 
+ # Allow system_server to read from postinstall scripts through STDIN, to check if the
+ # otapreopt_script is still alive.
+diff --git a/private/system_server_startup.te b/private/system_server_startup.te
+index b52500b..ba61048 100644
+--- a/private/system_server_startup.te
++++ b/private/system_server_startup.te
+@@ -6,6 +6,7 @@ tmpfs_domain(system_server_startup)
+ # Create JIT memory
+ allow system_server_startup self:process execmem;
+ allow system_server_startup system_server_startup_tmpfs:file { execute read write open map };
++allow system_server_startup system_server_startup:memfd_file execute;
+ 
+ # Allow to pick up integrity-checked artifacts from the ART APEX dalvik cache.
+ allow system_server_startup apex_art_data_file:dir r_dir_perms;
+diff --git a/private/traced.te b/private/traced.te
+index 9e41ab8..cbcef11 100644
+--- a/private/traced.te
++++ b/private/traced.te
+@@ -52,6 +52,13 @@ allow traced  {
+   traced_probes_tmpfs
+   userdebug_or_eng(`system_server_tmpfs')
+ }:file { getattr map read write };
++allow traced  {
++  appdomain
++  heapprofd
++  surfaceflinger
++  traced_probes
++  userdebug_or_eng(`system_server')
++}:memfd_file { getattr map read write };
+ 
+ # Allow traced to detect if a process is frozen (b/381089063).
+ allow traced cgroup_v2:file r_file_perms;
+diff --git a/private/untrusted_app_25.te b/private/untrusted_app_25.te
+index f4d17ef..0cc9f47 100644
+--- a/private/untrusted_app_25.te
++++ b/private/untrusted_app_25.te
+@@ -70,3 +70,5 @@ userdebug_or_eng(`
+   auditallow untrusted_app_25 apk_data_file:dir { watch watch_reads };
+   auditallow untrusted_app_25 apk_data_file:file { watch watch_reads };
+ ')
++allow untrusted_app_25 domain:memfd_file ioctl;
++allowxperm untrusted_app_25 domain:memfd_file ioctl ashmem_ioctls;
+diff --git a/private/untrusted_app_27.te b/private/untrusted_app_27.te
+index cb3a860..79201a6 100644
+--- a/private/untrusted_app_27.te
++++ b/private/untrusted_app_27.te
+@@ -58,3 +58,5 @@ userdebug_or_eng(`
+   auditallow untrusted_app_27 apk_data_file:dir { watch watch_reads };
+   auditallow untrusted_app_27 apk_data_file:file { watch watch_reads };
+ ')
++allow untrusted_app_27 domain:memfd_file ioctl;
++allowxperm untrusted_app_27 domain:memfd_file ioctl ashmem_ioctls;
+diff --git a/private/untrusted_app_29.te b/private/untrusted_app_29.te
+index ddd3412..6808155 100644
+--- a/private/untrusted_app_29.te
++++ b/private/untrusted_app_29.te
+@@ -36,3 +36,5 @@ userdebug_or_eng(`
+   auditallow untrusted_app_29 apk_data_file:dir { watch watch_reads };
+   auditallow untrusted_app_29 apk_data_file:file { watch watch_reads };
+ ')
++allow untrusted_app_29 domain:memfd_file ioctl;
++allowxperm untrusted_app_29 domain:memfd_file ioctl ashmem_ioctls;
+diff --git a/private/untrusted_app_30.te b/private/untrusted_app_30.te
+index b645b05..ebb3a0a 100644
+--- a/private/untrusted_app_30.te
++++ b/private/untrusted_app_30.te
+@@ -38,3 +38,5 @@ userdebug_or_eng(`
+   auditallow untrusted_app_30 apk_data_file:dir { watch watch_reads };
+   auditallow untrusted_app_30 apk_data_file:file { watch watch_reads };
+ ')
++allow untrusted_app_30 domain:memfd_file ioctl;
++allowxperm untrusted_app_30 domain:memfd_file ioctl ashmem_ioctls;
+diff --git a/private/untrusted_app_32.te b/private/untrusted_app_32.te
+index 6e95fd1..0e34bbf 100644
+--- a/private/untrusted_app_32.te
++++ b/private/untrusted_app_32.te
+@@ -37,3 +37,5 @@ userdebug_or_eng(`
+   auditallow untrusted_app_32 apk_data_file:dir { watch watch_reads };
+   auditallow untrusted_app_32 apk_data_file:file { watch watch_reads };
+ ')
++allow untrusted_app_32 domain:memfd_file ioctl;
++allowxperm untrusted_app_32 domain:memfd_file ioctl ashmem_ioctls;
+diff --git a/private/webview_zygote.te b/private/webview_zygote.te
+index 1e32c1f..01d257d 100644
+--- a/private/webview_zygote.te
++++ b/private/webview_zygote.te
+@@ -72,6 +72,7 @@ allow webview_zygote system_file:dir r_dir_perms;
+ 
+ # Read and inspect temporary files (like system properties) managed by zygote.
+ allow webview_zygote zygote_tmpfs:file { read getattr };
++allow webview_zygote zygote:memfd_file { read getattr };
+ # Child of zygote.
+ allow webview_zygote zygote:fd use;
+ allow webview_zygote zygote:process sigchld;
+diff --git a/private/zygote.te b/private/zygote.te
+index 3bf3477..6e9a6fe 100644
+--- a/private/zygote.te
++++ b/private/zygote.te
+@@ -120,6 +120,7 @@ allow zygote proc_filesystems:file r_file_perms;
+ allow zygote self:process execmem;
+ allow zygote zygote_tmpfs:file execute;
+ allow zygote ashmem_libcutils_device:chr_file execute;
++allow zygote zygote:memfd_file execute;
+ 
+ # Execute idmap and dex2oat within zygote's own domain.
+ # TODO:  Should either of these be transitioned to the same domain
+diff --git a/public/te_macros b/public/te_macros
+index 849c8fd..d66ca82 100644
+--- a/public/te_macros
++++ b/public/te_macros
+@@ -249,6 +249,7 @@ typeattribute $1 appdomain;
+ # Label tmpfs objects for all apps.
+ type_transition $1 tmpfs:file appdomain_tmpfs;
+ userfaultfd_use($1)
++allow $1 appdomain:memfd_file { execute getattr map read write };
+ allow $1 appdomain_tmpfs:file { execute getattr map read write ioctl relabelfrom };
+ allowxperm $1 appdomain_tmpfs:file ioctl ashmem_ioctls;
+ neverallow { $1 -runas_app -shell -simpleperf } { domain -$1 }:file no_rw_file_perms;
+@@ -340,6 +341,8 @@ typeattribute $1 $2;
+ define(`hal_client_domain', `
+ typeattribute $1 halclientdomain;
+ typeattribute $1 $2_client;
++allow $1 $2:memfd_file { read write getattr map };
++allow $2 $1:memfd_file { read write getattr map };
+ 
+ # TODO(b/34170079): Make the inclusion of the rules below conditional also on
+ # non-Treble devices. For now, on non-Treble device, always grant clients of a
+@@ -817,6 +820,7 @@ define(`can_profile_heap', `
+   # Allow to read and write to heapprofd shmem.
+   # The client needs to read the read and write pointers in order to write.
+   allow $1 heapprofd_tmpfs:file { read write getattr map };
++  allow $1 heapprofd:memfd_file { read write getattr map };
+   # Use shared memory received over the unix socket.
+   allow $1 heapprofd:fd use;
+ 
+@@ -878,6 +882,7 @@ define(`never_profile_perf', `
+ define(`perfetto_producer', `
+   allow $1 traced:fd use;
+   allow $1 traced_tmpfs:file { read write getattr map };
++  allow $1 traced:memfd_file { read write getattr map };
+   unix_socket_connect($1, traced_producer, traced)
+ 
+   # Also allow the service to use the producer file descriptors. This is
+diff --git a/tests/sepolicy_tests.py b/tests/sepolicy_tests.py
+index d820605..01008a4 100644
+--- a/tests/sepolicy_tests.py
++++ b/tests/sepolicy_tests.py
+@@ -187,8 +187,8 @@ def TestIsolatedAttributeConsistency(test_policy):
+         "codec2_config_prop" : ["file"],
+         "device_config_nnapi_native_prop":["file"],
+         "gpu_device": ["dir"],
+-        "hal_allocator_default":["binder", "fd"],
+-        "hal_codec2": ["binder", "fd"],
++        "hal_allocator_default":["binder", "fd", "memfd_file"],
++        "hal_codec2": ["binder", "fd", "memfd_file"],
+         "hal_codec2_hwservice":["hwservice_manager"],
+         "hal_graphics_allocator": ["binder", "fd"],
+         "hal_graphics_allocator_service":["service_manager"],
+@@ -247,7 +247,7 @@ def TestIsolatedAttributeConsistency(test_policy):
+             if not checkIsolatedComputeAllowed(tctx, tclass) and \
+                 ( tctx not in permissionAllowList \
+                     or tclass not in permissionAllowList[tctx] \
+-                    or ( p == "write") \
++                    or ( p == "write" and tclass != "memfd_file") \
+                     or ( p == "rw_file_perms") ):
+                 violated_permissions += [perm]
+         return violated_permissions

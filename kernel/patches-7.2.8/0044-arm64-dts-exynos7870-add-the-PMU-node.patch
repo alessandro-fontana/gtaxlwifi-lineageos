@@ -1,0 +1,54 @@
+From c97e8022cc683229db2cb50df91e7eadeb1f3a1e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:48 +0000
+Subject: [PATCH] arm64: dts: exynos7870: add the PMU node
+
+The CPU cores implement PMUv3 - the kernel detects it at boot with
+"CPU features: detected: PMUv3" - but without a device tree node the
+ARM PMU driver never probes, so no hardware performance counters are
+available and perf falls back to software events only.
+
+Add the node with the interrupts taken from the vendor device tree.
+Note that the affinity list is deliberately not in ascending order:
+SPI 34-37 serve the cores of cluster1 and SPI 50-53 those of cluster0,
+which is how the GIC is wired on this SoC.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index 19f9ae7835..fd45a6185a 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -125,6 +125,26 @@ oscclk: oscclk {
+ 		#clock-cells = <0>;
+ 	};
+ 
++	pmu {
++		compatible = "arm,cortex-a53-pmu";
++		interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 36 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH>;
++		interrupt-affinity = <&cpu4>,
++				     <&cpu5>,
++				     <&cpu6>,
++				     <&cpu7>,
++				     <&cpu0>,
++				     <&cpu1>,
++				     <&cpu2>,
++				     <&cpu3>;
++	};
++
+ 	psci {
+ 		compatible = "arm,psci";
+ 		method = "smc";
+-- 
+2.47.3
+

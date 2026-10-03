@@ -1,0 +1,24 @@
+From 78610ae552854600cf37264f3b1f49aa9c3fd47a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 16:55:57 +0200
+Subject: [PATCH] arm64: gtaxlwifi_defconfig: enable the S5K4H5YC driver
+
+---
+ arch/arm64/configs/gtaxlwifi_defconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/configs/gtaxlwifi_defconfig b/arch/arm64/configs/gtaxlwifi_defconfig
+index 82f5420ad5..18a5fc5535 100644
+--- a/arch/arm64/configs/gtaxlwifi_defconfig
++++ b/arch/arm64/configs/gtaxlwifi_defconfig
+@@ -3227,6 +3227,7 @@ CONFIG_VIDEO_V4L2_SUBDEV_API=y
+ CONFIG_V4L_PLATFORM_DRIVERS=y
+ CONFIG_VIDEO_EXYNOS7870_CSIS=m
+ CONFIG_VIDEO_CAMERA_SENSOR=y
++CONFIG_VIDEO_S5K4H5YC=m
+ CONFIG_VIDEO_SR259=m
+ 
+ #
+-- 
+2.47.3
+

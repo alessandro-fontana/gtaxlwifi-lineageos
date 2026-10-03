@@ -1,0 +1,40 @@
+From f2e4a72037d9c17a0a50686fdfe8f3a205eec3f9 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 2 Oct 2026 11:37:19 +0200
+Subject: [PATCH 187/187] media: s5p-mfc: decode the first H.263 picture
+
+H.263 has no header of its own: the picture header of the first frame
+is what SEQ_START parses, as with VP8. Decode that buffer rather than
+completing it unused, which lost the first picture and left every
+picture up to the next intra one predicted from an empty reference.
+
+Tested on Exynos7870 with Android's Codec2 V4L2 decoder: H.263 QCIF and
+CIF decoded identical to ffmpeg, first picture included.
+
+---
+ drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 9f47ef9dd7..5c9c8ac55a 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -604,11 +604,14 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 				ctx->head_processed = 0;
+ 			else
+ 				ctx->head_processed = 1;
+-		} else if (ctx->codec_mode == S5P_MFC_CODEC_VP8_DEC) {
++		} else if (ctx->codec_mode == S5P_MFC_CODEC_VP8_DEC ||
++			   ctx->codec_mode == S5P_MFC_CODEC_H263_DEC) {
+ 			/*
+ 			 * The buffer that carried the header is the first key
+ 			 * frame: decode it, rather than completing it unused and
+ 			 * decoding the next frames against an empty reference.
++			 * H.263 has no header of its own either: the picture
++			 * header of the first frame is the one parsed.
+ 			 */
+ 			ctx->head_processed = 0;
+ 		} else {
+-- 
+2.47.3
+

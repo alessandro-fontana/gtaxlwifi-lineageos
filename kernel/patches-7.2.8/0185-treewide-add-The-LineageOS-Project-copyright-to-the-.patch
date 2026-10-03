@@ -1,0 +1,213 @@
+From ffea46a270e720da534f3842b8f2502dc113c7e3 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 1 Oct 2026 17:14:28 +0200
+Subject: [PATCH] treewide: add The LineageOS Project copyright to the
+ gtaxlwifi files
+
+The LineageOS charter wants original contributions copyrighted as
+The LineageOS Project, added to the existing notices (Samsung, Silicon
+Mitus, Markuss Broks), never replacing them.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi-decon.dts       | 2 ++
+ arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts             | 2 ++
+ drivers/leds/flash/leds-sm5703.c                                | 2 ++
+ drivers/media/i2c/s5k4h5yc.c                                    | 2 ++
+ drivers/media/i2c/sr259.c                                       | 2 ++
+ .../media/platform/samsung/exynos7870-csis/exynos7870-csis.c    | 2 ++
+ drivers/mfd/sm5703.c                                            | 2 ++
+ drivers/power/supply/sm5703-charger.c                           | 2 ++
+ drivers/power/supply/sm5703_fuelgauge.c                         | 2 ++
+ drivers/soc/samsung/exynos7870-asv-dump.c                       | 2 ++
+ drivers/soc/samsung/exynos7870-pmu.c                            | 2 ++
+ include/linux/mfd/sm5703.h                                      | 2 ++
+ sound/soc/samsung/gtaxl_rt5659.c                                | 2 ++
+ sound/soc/samsung/s1402x.c                                      | 2 ++
+ 14 files changed, 28 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi-decon.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi-decon.dts
+index c0bf32be83..6dcc779095 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi-decon.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi-decon.dts
+@@ -14,6 +14,8 @@
+  * ATTENZIONE: U-Boot compila il DTS base (CONFIG_OF_LIST). Questo file
+  * serve solo al kernel; non aggiungerlo alla lista di U-Boot, che non
+  * ha i binding del pannello.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include "exynos7870-gtaxlwifi.dts"
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+index be33e5d8f1..b926a0f1d7 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+@@ -21,6 +21,8 @@
+  *
+  * Questo file e' compilato sia dal kernel sia da U-Boot: ogni macro o
+  * label nuova deve esistere anche nella copia dei binding dentro U-Boot.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ /dts-v1/;
+diff --git a/drivers/leds/flash/leds-sm5703.c b/drivers/leds/flash/leds-sm5703.c
+index 3e1cd2c17f..0db34e2793 100644
+--- a/drivers/leds/flash/leds-sm5703.c
++++ b/drivers/leds/flash/leds-sm5703.c
+@@ -11,6 +11,8 @@
+  * is present, as the vendor driver does. The operation mode of the chip is
+  * shared with the charger, so it is saved when the LED turns on and put
+  * back when it turns off.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/bitfield.h>
+diff --git a/drivers/media/i2c/s5k4h5yc.c b/drivers/media/i2c/s5k4h5yc.c
+index 3e061f8385..d789e66b67 100644
+--- a/drivers/media/i2c/s5k4h5yc.c
++++ b/drivers/media/i2c/s5k4h5yc.c
+@@ -9,6 +9,8 @@
+  * 10.1 (2016), fimc-is-cis-4h5yc-setB.h: full resolution at 30 fps and the
+  * 2x2 binned 1640x1228 mode at 30 fps, both from a 26 MHz clock. The two
+  * modes share the PLL settings, hence one link frequency.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/clk.h>
+diff --git a/drivers/media/i2c/sr259.c b/drivers/media/i2c/sr259.c
+index e4271026e6..12fc5ac880 100644
+--- a/drivers/media/i2c/sr259.c
++++ b/drivers/media/i2c/sr259.c
+@@ -9,6 +9,8 @@
+  * The register sequence comes from the vendor driver of the Galaxy Tab A
+  * 10.1 (2016), fimc-is-cis-sr259-setA.h: it is the only mode the vendor
+  * uses, 1632x1228 at 30 fps from a 26 MHz clock.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/clk.h>
+diff --git a/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c b/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
+index a3c5ebeeb9..c78bfff0ba 100644
+--- a/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
++++ b/drivers/media/platform/samsung/exynos7870-csis/exynos7870-csis.c
+@@ -23,6 +23,8 @@
+  * under memory load the DMA drains the last lines of frame N after the
+  * link has started frame N+1, and rotating on the link frame start then
+  * gave back, as broken, buffers the DMA was about to complete.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/bitfield.h>
+diff --git a/drivers/mfd/sm5703.c b/drivers/mfd/sm5703.c
+index 4f26a3cbc7..bd94d159c6 100644
+--- a/drivers/mfd/sm5703.c
++++ b/drivers/mfd/sm5703.c
+@@ -9,6 +9,8 @@
+  * a different bus, and are handled by separate drivers.
+  *
+  * Copyright (C) 2022 Markuss Broks <markuss.broks@gmail.com>
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/delay.h>
+diff --git a/drivers/power/supply/sm5703-charger.c b/drivers/power/supply/sm5703-charger.c
+index 50c23a7493..aa2047d9c0 100644
+--- a/drivers/power/supply/sm5703-charger.c
++++ b/drivers/power/supply/sm5703-charger.c
+@@ -4,6 +4,8 @@
+  *
+  * Derived from the vendor driver drivers/battery_v2/sm5703_charger.c:
+  *   Copyright (C) 2013 Silicon Mitus Technology Corp.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/bitfield.h>
+diff --git a/drivers/power/supply/sm5703_fuelgauge.c b/drivers/power/supply/sm5703_fuelgauge.c
+index 3403ebc5f2..b07868ef41 100644
+--- a/drivers/power/supply/sm5703_fuelgauge.c
++++ b/drivers/power/supply/sm5703_fuelgauge.c
+@@ -16,6 +16,8 @@
+  * Derived from the vendor driver drivers/battery_v2/sm5703_fuelgauge.c:
+  *   Copyright (C) 2013 Samsung Electronics, Dongik Sin <dongik.sin@samsung.com>
+  *   Copyright (C) 2015 Silicon Mitus, SW Jung
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/bits.h>
+diff --git a/drivers/soc/samsung/exynos7870-asv-dump.c b/drivers/soc/samsung/exynos7870-asv-dump.c
+index 4360ebc6e5..e47a9abb49 100644
+--- a/drivers/soc/samsung/exynos7870-asv-dump.c
++++ b/drivers/soc/samsung/exynos7870-asv-dump.c
+@@ -14,6 +14,8 @@
+  *
+  * Collocazione: drivers/soc/samsung/exynos7870-asv-dump.c
+  * Makefile (stessa directory):  obj-y += exynos7870-asv-dump.o
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/init.h>
+diff --git a/drivers/soc/samsung/exynos7870-pmu.c b/drivers/soc/samsung/exynos7870-pmu.c
+index a6dda2a5f1..e6936254f7 100644
+--- a/drivers/soc/samsung/exynos7870-pmu.c
++++ b/drivers/soc/samsung/exynos7870-pmu.c
+@@ -14,6 +14,8 @@
+  * power on the next plain WFI.
+  *
+  * CPU_OFF (hotplug) needs none of this: the firmware programs the PMU itself.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/bits.h>
+diff --git a/include/linux/mfd/sm5703.h b/include/linux/mfd/sm5703.h
+index 6472dc9c61..5ec6ad00a3 100644
+--- a/include/linux/mfd/sm5703.h
++++ b/include/linux/mfd/sm5703.h
+@@ -3,6 +3,8 @@
+  * Silicon Mitus SM5703 PMIC register definitions
+  *
+  * Copyright (C) 2022 Markuss Broks <markuss.broks@gmail.com>
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #ifndef __MFD_SM5703_H__
+diff --git a/sound/soc/samsung/gtaxl_rt5659.c b/sound/soc/samsung/gtaxl_rt5659.c
+index aecadef31d..e8de74d184 100644
+--- a/sound/soc/samsung/gtaxl_rt5659.c
++++ b/sound/soc/samsung/gtaxl_rt5659.c
+@@ -16,6 +16,8 @@
+  * pad (not yet modelled) at the price of nothing, since clock
+  * coherency is guaranteed by construction when the reference is the
+  * bus clock itself.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/io.h>
+diff --git a/sound/soc/samsung/s1402x.c b/sound/soc/samsung/s1402x.c
+index da87a25f0d..56543ae2e7 100644
+--- a/sound/soc/samsung/s1402x.c
++++ b/sound/soc/samsung/s1402x.c
+@@ -20,6 +20,8 @@
+  * The IP is reset by the LPASS wrapper (MFD_EXYNOS_LPASS, DISPAUD_CFG
+  * bit 0) before this device is populated; probe order is guaranteed by
+  * the device hierarchy.
++ *
++ * Copyright (C) 2026 The LineageOS Project
+  */
+ 
+ #include <linux/clk.h>
+-- 
+2.47.3
+

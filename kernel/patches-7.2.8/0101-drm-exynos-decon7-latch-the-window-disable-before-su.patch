@@ -1,0 +1,84 @@
+From 0576b0dbc5d3561c8426da700951962dbbb7ffe4 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 17 Sep 2026 17:06:55 +0200
+Subject: [PATCH] drm/exynos: decon7: latch the window disable before
+ suspending
+
+decon_atomic_disable() states its own requirement in a comment: every
+window has to be disabled before the connector is suspended, or the
+block may later scan out of a destroyed buffer. It does not meet it.
+
+decon_disable_plane() asserts the shadow protection of the window,
+clears WINCONx_ENWIN, asks for a standalone update and leaves the
+protection asserted. On the commit path that is correct, because
+decon_atomic_flush() releases the protection of every window right
+afterwards and the write is latched there. An atomic disable is not
+followed by a flush, so the protection stays on, the ENWIN clear never
+reaches the shadow registers, and pm_runtime_put_sync() follows without
+waiting for the frame in flight.
+
+DECON is therefore suspended still configured on the framebuffers it was
+scanning, and resumes from that configuration. When the compositor drops
+its last reference to one of those buffers the mapping is torn down
+while the block is still fetching from it, and the SysMMU fault handler
+panics:
+
+  exynos-sysmmu 14860000.iommu: 14830000.display-controller: [READ]
+  PAGE FAULT occurred at 0xf20061c0
+  Kernel panic - not syncing: Unrecoverable System MMU Fault!
+   exynos_sysmmu_irq+0xc4/0x150
+   __iommu_unmap+0x148/0x324
+   iommu_dma_free+0x2c/0x50
+   exynos_drm_gem_destroy+0x9c/0xd4
+   drm_gem_dmabuf_release+0x40/0xa0
+   dma_buf_release+0x40/0x9c
+
+On gtaxlwifi the panic lands 297 ms after the panel wake and is
+reproduced by cycling the screen off and on.
+
+Release the protection, ask for the update and wait for the vsync that
+makes the disable effective before the clocks go, which is what
+decon_clear_channels() in this same file already does for the channels
+it finds enabled at probe.
+---
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index 3f8ff3ae9b..7e8bfe4cd3 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -744,6 +744,7 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
+ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
+ {
+ 	struct decon_context *ctx = crtc->ctx;
++	u32 val;
+ 	int i;
+ 
+ 	/*
+@@ -754,6 +755,22 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
+ 	for (i = 0; i < WINDOWS_NR; i++)
+ 		decon_disable_plane(crtc, &ctx->planes[i]);
+ 
++	/*
++	 * decon_disable_plane() leaves the shadow protected: on the commit
++	 * path decon_atomic_flush() releases it, but nothing flushes after
++	 * an atomic disable, so without this the clear above never reaches
++	 * the shadow registers and the block keeps the old buffers.
++	 */
++	for (i = 0; i < WINDOWS_NR; i++)
++		decon_shadow_protect_win(ctx, i, false);
++
++	val = readl(ctx->regs + DECON_UPDATE);
++	val |= DECON_UPDATE_STANDALONE_F;
++	writel(val, ctx->regs + DECON_UPDATE);
++
++	/* Disabling a channel only takes effect at the next vsync. */
++	decon_wait_for_vblank(ctx);
++
+ 	ctx->scanout_on = false;
+ 	pm_runtime_put_sync(ctx->dev);
+ }
+-- 
+2.47.3
+

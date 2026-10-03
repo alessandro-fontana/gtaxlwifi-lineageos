@@ -1,0 +1,35 @@
+From d0a64c95f6e37a421ffc26652b1572473ccbca49 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 12:43:20 +0200
+Subject: [PATCH] media: s5p-mfc: eight contexts instead of four
+
+The four contexts are shared by the decoder and the encoder nodes: the
+fifth open() of either fails with -EBUSY. Android's codec list for
+this driver advertises four decoder and four encoder instances, and the
+vendor driver for the same MFC (drivers/media/platform/exynos/mfc)
+allows 32. The limit only sizes dev->ctx[] and the bits of
+ctx_work_bits, an unsigned long.
+
+Use eight. With the 16 MiB pool on MFC v10, four H.264 or HEVC decoders
+(2 MiB of context each) and four encoders fit together.
+
+---
+ drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+index c8113ce659..84aa14d067 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+@@ -44,7 +44,7 @@
+ /* MFC definitions */
+ #define MFC_MAX_EXTRA_DPB       5
+ #define MFC_MAX_BUFFERS		32
+-#define MFC_NUM_CONTEXTS	4
++#define MFC_NUM_CONTEXTS	8
+ /* Interrupt timeout */
+ #define MFC_INT_TIMEOUT		2000
+ /* Busy wait timeout */
+-- 
+2.47.3
+

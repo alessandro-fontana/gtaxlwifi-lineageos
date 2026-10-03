@@ -1,0 +1,447 @@
+From aab455a478a8e6304869ad05e7b7df4036af9bf7 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:53 +0000
+Subject: [PATCH] ASoC: samsung: add s1402x audio mixer driver
+
+The s1402x ("AUDMIXER") digital mixer sits between I2S0 and the
+external codec on Exynos 7870 boards; the codec is wired to the
+mixer's AMP port, so the block is on the mandatory signal path.
+
+Add a minimal driver for the AP (IN1) path only: static register
+configuration mirroring the vendor audmixer_init_mixer() sequence,
+48k/192k system clock selection, data length and bclk-ratio handling,
+and the data-path flush after each reconfiguration.  CP and BT
+interfaces are not implemented.
+
+The IP is reset by the exynos-lpass wrapper (DISPAUD_CFG bit 0)
+before this device is populated.
+
+Downstream reference: sound/soc/codecs/exynos-audmixer-v2.c and
+exynos-audmixer-regs.h (LineageOS 21, kernel/samsung/exynos7870).
+---
+ sound/soc/samsung/s1402x.c | 413 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 413 insertions(+)
+ create mode 100644 sound/soc/samsung/s1402x.c
+
+diff --git a/sound/soc/samsung/s1402x.c b/sound/soc/samsung/s1402x.c
+new file mode 100644
+index 0000000000..73e7598305
+--- /dev/null
++++ b/sound/soc/samsung/s1402x.c
+@@ -0,0 +1,413 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Samsung s1402x audio mixer driver (Exynos 7870 DISPAUD "AUDMIXER")
++ *
++ * Minimal mainline-style driver derived from the downstream
++ * exynos-audmixer-v2.c (Copyright 2015 Samsung Electronics Co. Ltd.).
++ *
++ * The s1402x sits between the SoC I2S0 interface and the external
++ * codec: I2S0 -> mixer IN1 ("AP") -> mixer AMP port -> codec AIF.
++ * There is no way around it on boards wiring the codec to the AMP
++ * port, so a sound card must place this device as an extra codec on
++ * the same DAI link as the real codec.
++ *
++ * Only the AP (IN1) path is implemented: CP and BT interfaces are not
++ * usable without the Samsung modem/BT stack.  The block is configured
++ * once with a static register sequence (mirroring the downstream
++ * audmixer_init_mixer()), plus a small amount of per-stream state:
++ * data length, 48k/192k system clock and the data-path flush.
++ *
++ * The IP is reset by the LPASS wrapper (MFD_EXYNOS_LPASS, DISPAUD_CFG
++ * bit 0) before this device is populated; probe order is guaranteed by
++ * the device hierarchy.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/regmap.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++/*
++ * Register offsets.  The APB incarnation of the mixer (this one) has
++ * a stride of 4 bytes; the historical I2C incarnation used the raw
++ * offsets.  Values below are the APB byte offsets.
++ */
++#define S1402X_00_SOFT_RSTB		0x00
++#define S1402X_01_IN1_CTL1		0x04
++#define S1402X_02_IN1_CTL2		0x08
++#define S1402X_03_IN1_CTL3		0x0c
++#define S1402X_07_IN3_CTL1		0x1c
++#define S1402X_08_IN3_CTL2		0x20
++#define S1402X_09_IN3_CTL3		0x24
++#define S1402X_0A_HQ_CTL		0x28
++#define S1402X_0B_SLOT_L		0x2c
++#define S1402X_0C_SLOT_R		0x30
++#define S1402X_0E_TSLOT			0x38
++#define S1402X_0F_DIG_EN		0x3c
++#define S1402X_18_INAMP_CTL		0x60
++#define S1402X_19_OUTAP1_CTL		0x64
++#define S1402X_1A_OUTCP1_CTL		0x68
++#define S1402X_MAX_REGISTER		0x1c8	/* 0x72 * 4 */
++
++/* S1402X_00_SOFT_RSTB */
++#define SOFT_RSTB_DATA_RSTB		BIT(1)
++#define SOFT_RSTB_SYS_RSTB		BIT(0)
++
++/* INx_CTL1 */
++#define INCTL1_MASTER_SHIFT		4
++#define INCTL1_MPCM_SLOT_SHIFT		2
++#define INCTL1_I2S_PCM_SHIFT		0
++#define MIXER_SLAVE			0
++#define MPCM_SLOT_32BCK			1
++#define I2S_PCM_MODE_I2S		0
++
++/* INx_CTL2 */
++#define INCTL2_I2S_XFS_SHIFT		5
++#define INCTL2_I2S_XFS_MASK		0x3
++#define INCTL2_LRCK_POL_SHIFT		4
++#define INCTL2_I2S_DF_SHIFT		2
++#define INCTL2_I2S_DL_SHIFT		0
++#define INCTL2_I2S_DL_MASK		0x3
++#define I2S_XFS_32FS			0
++#define I2S_XFS_48FS			1
++#define I2S_XFS_64FS			2
++#define LRCLK_POL_LEFT			0
++#define I2S_DF_I2S			0
++#define I2S_DL_16BIT			0
++#define I2S_DL_24BIT			3
++
++/* INx_CTL3 (PCM mode only, kept at downstream defaults) */
++#define INCTL3_PCM_DAD_SHIFT		5
++#define INCTL3_PCM_DF_SHIFT		0
++#define PCM_DAD_0BCK			1
++#define PCM_DF_SHORT_FRAME		4
++
++/* S1402X_0A_HQ_CTL */
++#define HQ_CTL_MCKO_EN			BIT(2)
++#define HQ_CTL_HQ_EN			BIT(0)
++
++/* SLOT_L / SLOT_R / TSLOT */
++#define SLOT_SEL_1ST_SLOT		1
++#define SLOT_SEL_2ND_SLOT		2
++#define TSLOT_USED_2			1
++
++/* S1402X_0F_DIG_EN */
++#define DIG_EN_MIX_EN			BIT(3)
++
++/* S1402X_18_INAMP_CTL (return path codec -> mixer, 64fs 24bit) */
++#define INAMP_CTL_LRCLK_POL_SHIFT	7
++#define INAMP_CTL_BCK_POL_SHIFT		6
++#define INAMP_CTL_RSVD_SHIFT		4	/* reserved, value 2 */
++#define INAMP_CTL_I2S_XFS_SHIFT		2
++#define INAMP_CTL_I2S_DL_SHIFT		0
++#define AMP_I2S_DL_16BIT		0
++#define AMP_I2S_DL_24BIT		2
++
++/* S1402X_19/1A OUTxP1_CTL (mixer -> codec, 32fs 16bit) */
++#define OUTAMP_CTL_LRCLK_POL_SHIFT	5
++#define OUTAMP_CTL_BCK_POL_SHIFT	4
++#define OUTAMP_CTL_I2S_XFS_SHIFT	2
++#define OUTAMP_CTL_I2S_DL_SHIFT		0
++
++#define S1402X_SYS_CLK_48KHZ		(24576000U + 100)
++#define S1402X_SYS_CLK_192KHZ		(49152000U + 100)
++
++#define S1402X_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
++
++struct s1402x_priv {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *clk_dout;
++	struct clk *clk_aclk;
++};
++
++/* Toggle the data-path reset; call after any configuration change */
++static void s1402x_reset_data(struct s1402x_priv *priv)
++{
++	regmap_update_bits(priv->regmap, S1402X_00_SOFT_RSTB,
++			   SOFT_RSTB_DATA_RSTB, 0);
++	regmap_update_bits(priv->regmap, S1402X_00_SOFT_RSTB,
++			   SOFT_RSTB_DATA_RSTB, SOFT_RSTB_DATA_RSTB);
++}
++
++/* Full system + data reset, needed once after the block powers up */
++static void s1402x_reset_sys(struct s1402x_priv *priv)
++{
++	regmap_write(priv->regmap, S1402X_00_SOFT_RSTB, 0);
++	usleep_range(1000, 1500);
++	regmap_write(priv->regmap, S1402X_00_SOFT_RSTB,
++		     SOFT_RSTB_DATA_RSTB | SOFT_RSTB_SYS_RSTB);
++	usleep_range(1000, 1500);
++}
++
++/*
++ * Static configuration, mirroring the downstream audmixer_init_mixer():
++ * every interface in I2S slave mode, 32fs, 16 bit; AMP return path at
++ * 64fs 24 bit; two slots; digital mixer enabled; MCKO enabled.
++ */
++static void s1402x_init(struct s1402x_priv *priv)
++{
++	unsigned int inctl2 = (I2S_XFS_32FS << INCTL2_I2S_XFS_SHIFT) |
++			      (LRCLK_POL_LEFT << INCTL2_LRCK_POL_SHIFT) |
++			      (I2S_DF_I2S << INCTL2_I2S_DF_SHIFT) |
++			      (I2S_DL_16BIT << INCTL2_I2S_DL_SHIFT);
++
++	regmap_write(priv->regmap, S1402X_02_IN1_CTL2, inctl2);
++
++	regmap_write(priv->regmap, S1402X_07_IN3_CTL1,
++		     (MIXER_SLAVE << INCTL1_MASTER_SHIFT) |
++		     (MPCM_SLOT_32BCK << INCTL1_MPCM_SLOT_SHIFT) |
++		     (I2S_PCM_MODE_I2S << INCTL1_I2S_PCM_SHIFT));
++	regmap_write(priv->regmap, S1402X_08_IN3_CTL2, inctl2);
++	regmap_write(priv->regmap, S1402X_09_IN3_CTL3,
++		     (PCM_DAD_0BCK << INCTL3_PCM_DAD_SHIFT) |
++		     (PCM_DF_SHORT_FRAME << INCTL3_PCM_DF_SHIFT));
++
++	regmap_write(priv->regmap, S1402X_0B_SLOT_L, SLOT_SEL_1ST_SLOT);
++	regmap_write(priv->regmap, S1402X_0C_SLOT_R, SLOT_SEL_2ND_SLOT);
++	regmap_write(priv->regmap, S1402X_0E_TSLOT, TSLOT_USED_2);
++
++	regmap_write(priv->regmap, S1402X_18_INAMP_CTL,
++		     (LRCLK_POL_LEFT << INAMP_CTL_LRCLK_POL_SHIFT) |
++		     (2 << INAMP_CTL_RSVD_SHIFT) |
++		     (I2S_XFS_64FS << INAMP_CTL_I2S_XFS_SHIFT) |
++		     (AMP_I2S_DL_24BIT << INAMP_CTL_I2S_DL_SHIFT));
++	regmap_write(priv->regmap, S1402X_19_OUTAP1_CTL,
++		     (LRCLK_POL_LEFT << OUTAMP_CTL_LRCLK_POL_SHIFT) |
++		     (AMP_I2S_DL_16BIT << OUTAMP_CTL_I2S_DL_SHIFT) |
++		     (I2S_XFS_32FS << OUTAMP_CTL_I2S_XFS_SHIFT));
++	regmap_write(priv->regmap, S1402X_1A_OUTCP1_CTL,
++		     (LRCLK_POL_LEFT << OUTAMP_CTL_LRCLK_POL_SHIFT) |
++		     (AMP_I2S_DL_16BIT << OUTAMP_CTL_I2S_DL_SHIFT) |
++		     (I2S_XFS_32FS << OUTAMP_CTL_I2S_XFS_SHIFT));
++
++	regmap_write(priv->regmap, S1402X_0A_HQ_CTL, HQ_CTL_MCKO_EN);
++	regmap_write(priv->regmap, S1402X_0F_DIG_EN, DIG_EN_MIX_EN);
++
++	s1402x_reset_data(priv);
++}
++
++static int s1402x_hw_params(struct snd_pcm_substream *substream,
++			    struct snd_pcm_hw_params *params,
++			    struct snd_soc_dai *dai)
++{
++	struct s1402x_priv *priv = snd_soc_dai_get_drvdata(dai);
++	unsigned int rate = params_rate(params);
++	unsigned int sys_clk, hq, dl;
++	int ret;
++
++	switch (params_format(params)) {
++	case SNDRV_PCM_FORMAT_S16_LE:
++		dl = I2S_DL_16BIT;
++		break;
++	case SNDRV_PCM_FORMAT_S24_LE:
++		dl = I2S_DL_24BIT;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (rate) {
++	case 48000:
++		sys_clk = S1402X_SYS_CLK_48KHZ;
++		hq = 0;
++		break;
++	case 192000:
++		sys_clk = S1402X_SYS_CLK_192KHZ;
++		hq = HQ_CTL_HQ_EN;
++		break;
++	default:
++		dev_err(priv->dev, "unsupported rate %u\n", rate);
++		return -EINVAL;
++	}
++
++	regmap_update_bits(priv->regmap, S1402X_02_IN1_CTL2,
++			   INCTL2_I2S_DL_MASK << INCTL2_I2S_DL_SHIFT, dl);
++
++	ret = clk_set_rate(priv->clk_dout, sys_clk);
++	if (ret) {
++		dev_err(priv->dev, "failed to set sysclk to %u: %d\n",
++			sys_clk, ret);
++		return ret;
++	}
++
++	regmap_update_bits(priv->regmap, S1402X_0A_HQ_CTL, HQ_CTL_HQ_EN, hq);
++
++	s1402x_reset_data(priv);
++
++	return 0;
++}
++
++static int s1402x_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
++{
++	struct s1402x_priv *priv = snd_soc_dai_get_drvdata(dai);
++	unsigned int xfs;
++
++	switch (ratio) {
++	case 32:
++		xfs = I2S_XFS_32FS;
++		break;
++	case 48:
++		xfs = I2S_XFS_48FS;
++		break;
++	case 64:
++		xfs = I2S_XFS_64FS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return regmap_update_bits(priv->regmap, S1402X_02_IN1_CTL2,
++				  INCTL2_I2S_XFS_MASK << INCTL2_I2S_XFS_SHIFT,
++				  xfs << INCTL2_I2S_XFS_SHIFT);
++}
++
++static const struct snd_soc_dai_ops s1402x_dai_ops = {
++	.hw_params	= s1402x_hw_params,
++	.set_bclk_ratio	= s1402x_set_bclk_ratio,
++};
++
++static struct snd_soc_dai_driver s1402x_dais[] = {
++	{
++		.name = "AP0",
++		.id = 0,
++		.ops = &s1402x_dai_ops,
++		.playback = {
++			.stream_name = "AP0 Playback",
++			.channels_min = 2,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_192000,
++			.formats = S1402X_FORMATS,
++		},
++		.capture = {
++			.stream_name = "AP0 Capture",
++			.channels_min = 2,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_192000,
++			.formats = S1402X_FORMATS,
++		},
++	},
++};
++
++/*
++ * The AP0 stream widgets are generated from the DAI above; the analog
++ * world belongs to the codec on the same link, so the mixer's DAPM
++ * contribution is just a pass-through.
++ */
++static const struct snd_soc_dapm_widget s1402x_dapm_widgets[] = {
++	SND_SOC_DAPM_MIXER("DMIX", SND_SOC_NOPM, 0, 0, NULL, 0),
++};
++
++static const struct snd_soc_dapm_route s1402x_dapm_routes[] = {
++	{ "DMIX", NULL, "AP0 Playback" },
++	{ "AP0 Capture", NULL, "DMIX" },
++};
++
++static const struct snd_soc_component_driver s1402x_component = {
++	.name			= "s1402x",
++	.dapm_widgets		= s1402x_dapm_widgets,
++	.num_dapm_widgets	= ARRAY_SIZE(s1402x_dapm_widgets),
++	.dapm_routes		= s1402x_dapm_routes,
++	.num_dapm_routes	= ARRAY_SIZE(s1402x_dapm_routes),
++	.endianness		= 1,
++};
++
++static const struct regmap_config s1402x_regmap_conf = {
++	.reg_bits	= 32,
++	.reg_stride	= 4,
++	.val_bits	= 32,
++	.max_register	= S1402X_MAX_REGISTER,
++};
++
++static int s1402x_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct s1402x_priv *priv;
++	void __iomem *base;
++	int ret;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->dev = dev;
++
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	priv->regmap = devm_regmap_init_mmio(dev, base, &s1402x_regmap_conf);
++	if (IS_ERR(priv->regmap))
++		return PTR_ERR(priv->regmap);
++
++	priv->clk_dout = devm_clk_get(dev, "audmixer_dout");
++	if (IS_ERR(priv->clk_dout))
++		return PTR_ERR(priv->clk_dout);
++
++	priv->clk_aclk = devm_clk_get(dev, "audmixer_aclk");
++	if (IS_ERR(priv->clk_aclk))
++		return PTR_ERR(priv->clk_aclk);
++
++	ret = clk_prepare_enable(priv->clk_aclk);
++	if (ret)
++		return ret;
++
++	ret = clk_set_rate(priv->clk_dout, S1402X_SYS_CLK_48KHZ);
++	if (ret)
++		dev_warn(dev, "initial sysclk rate not set: %d\n", ret);
++
++	ret = clk_prepare_enable(priv->clk_dout);
++	if (ret)
++		goto err_aclk;
++
++	platform_set_drvdata(pdev, priv);
++
++	s1402x_reset_sys(priv);
++	s1402x_init(priv);
++
++	ret = devm_snd_soc_register_component(dev, &s1402x_component,
++					      s1402x_dais,
++					      ARRAY_SIZE(s1402x_dais));
++	if (ret)
++		goto err_dout;
++
++	return 0;
++
++err_dout:
++	clk_disable_unprepare(priv->clk_dout);
++err_aclk:
++	clk_disable_unprepare(priv->clk_aclk);
++	return ret;
++}
++
++static void s1402x_remove(struct platform_device *pdev)
++{
++	struct s1402x_priv *priv = platform_get_drvdata(pdev);
++
++	clk_disable_unprepare(priv->clk_dout);
++	clk_disable_unprepare(priv->clk_aclk);
++}
++
++static const struct of_device_id s1402x_of_match[] = {
++	{ .compatible = "samsung,s1402x" },
++	{ },
++};
++MODULE_DEVICE_TABLE(of, s1402x_of_match);
++
++static struct platform_driver s1402x_driver = {
++	.driver = {
++		.name = "s1402x",
++		.of_match_table = s1402x_of_match,
++	},
++	.probe = s1402x_probe,
++	.remove = s1402x_remove,
++};
++module_platform_driver(s1402x_driver);
++
++MODULE_DESCRIPTION("Samsung s1402x audio mixer driver");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

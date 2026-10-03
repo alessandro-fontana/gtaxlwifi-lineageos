@@ -1,0 +1,96 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// A file from the generic device can be replaced without touching it in
+// two ways:
+//   - if its consumer also looks in /odm (fstab, ueventd), put it there;
+//   - otherwise a module with `overrides`, as long as the install path is
+//     different: two modules on the same path are a kati error even with
+//     `overrides` (measured, §55).
+
+// Encrypted /data and /metadata mounted by the second stage (§37), /misc
+// for the BCB (§41), zram at 100% (§17.12, §66). It goes in /odm/etc (here
+// /vendor/odm/etc): libfstab's GetFstabPath() looks for
+// fstab.${ro.hardware} in /odm/etc before /vendor/etc, so this file takes
+// the place of the generic device's fstab.generic without removing it and
+// without changing the cmdline.
+prebuilt_etc {
+    name: "fstab.gtaxlwifi",
+    src: "configs/fstab/fstab.gtaxlwifi",
+    filename: "fstab.generic",
+    device_specific: true,
+}
+
+// The enforcing-compatible generic_init addon (§38.3 B), selected by
+// androidboot.addon_fstab_suffix=gtaxl in cmdline.txt.
+prebuilt_etc {
+    name: "fstab.generic_init.addon.gtaxl",
+    src: "configs/fstab/fstab.generic_init.addon.gtaxl",
+    ramdisk: true,
+}
+
+// perfmgr-lineage Power HAL: optional/power-hal_perfmgr-lineage/product.mk
+// does PRODUCT_PACKAGES += powerhint.json, and the device defines the
+// module.
+prebuilt_etc {
+    name: "powerhint.json",
+    src: "configs/power/powerhint.json",
+    vendor: true,
+}
+
+// Camera: optional/camera-provider-hal_libcamera/product.mk does
+// PRODUCT_PACKAGES += libcamera_camera_hal.yaml and expects the device to
+// define the module, in /vendor/etc/libcamera/camera_hal.yaml (§57).
+prebuilt_etc {
+    name: "libcamera_camera_hal.yaml",
+    src: "configs/camera/camera_hal.yaml",
+    filename: "camera_hal.yaml",
+    relative_install_path: "libcamera",
+    vendor: true,
+}
+
+// The camera features, corrected for this device (§57).
+prebuilt_etc {
+    name: "gtaxlwifi-camera-features.xml",
+    src: "configs/camera/gtaxlwifi-camera-features.xml",
+    relative_install_path: "permissions",
+    vendor: true,
+}
+
+// No always-on display (§28.2): replaces AodDefaultOnOverlay.
+runtime_resource_overlay {
+    name: "GtaxlNoAodOverlay",
+    resource_dirs: ["rro/GtaxlNoAodOverlay/res"],
+    manifest: "rro/GtaxlNoAodOverlay/AndroidManifest.xml",
+    vendor: true,
+    overrides: ["AodDefaultOnOverlay"],
+}
+
+// Wi-Fi resources: PNO with the screen off (§68.21). Priority 1, above the
+// generic device's MainlineGenericWifiOverlay, which does not touch this
+// resource.
+runtime_resource_overlay {
+    name: "GtaxlWifiOverlay",
+    resource_dirs: ["rro/GtaxlWifiOverlay/res"],
+    manifest: "rro/GtaxlWifiOverlay/AndroidManifest.xml",
+    vendor: true,
+}
+
+// Tuning for libcamera's software ISP, one file per sensor: libcamera
+// looks for <sensor>.yaml before uncalibrated.yaml (§57.15).
+prebuilt_etc {
+    name: "libcamera_ipa_simple_s5k4h5yc.yaml",
+    src: "configs/camera/tuning/s5k4h5yc.yaml",
+    filename: "s5k4h5yc.yaml",
+    sub_dir: "libcamera/ipa/simple",
+    vendor: true,
+}
+
+prebuilt_etc {
+    name: "libcamera_ipa_simple_sr259.yaml",
+    src: "configs/camera/tuning/sr259.yaml",
+    filename: "sr259.yaml",
+    sub_dir: "libcamera/ipa/simple",
+    vendor: true,
+}

@@ -1,0 +1,22 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// Wi-Fi Direct discovery test (§49.8). Unlike BLE, here the feature must be
+// declared BEFORE it can be measured: SystemServer starts WifiP2pService
+// only if android.hardware.wifi.direct is present. So this app is for
+// deciding whether that declaration should be kept or removed.
+// Not part of any image: `m P2pScan` and adb install.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_app {
+    name: "P2pScan",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    optimize: { enabled: false },
+    dex_preopt: { enabled: false },
+}

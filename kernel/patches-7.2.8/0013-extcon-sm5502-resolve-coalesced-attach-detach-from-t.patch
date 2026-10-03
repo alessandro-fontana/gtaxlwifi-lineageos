@@ -1,0 +1,64 @@
+From 7a5b625d976e833ca1d7bbc660d89b3e0dcb6e33 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 14 Aug 2026 17:00:00 +0000
+Subject: [PATCH] extcon: sm5502: resolve coalesced attach/detach from the
+ hardware state
+
+sm5502_muic_irq_work() acts on the irq_attach and irq_detach flags in
+sequence.  When both are set in the same run of the work item, which
+happens whenever an attach and a detach interrupt are serviced in the
+same batch, the attach handler publishes the correct cable state and the
+detach handler immediately clears it again.
+
+The result is a MUIC that reports no cable while one is plugged in.  On a
+Galaxy Tab A (SM-T580) this leaves DEV_TYPE1 reading 0x20 (USB SDP) while
+the extcon device reports USB=0 SDP=0 DCP=0, so a charger driver
+consuming the extcon notifier falls back to its most conservative input
+current limit and the battery discharges on a connected cable.  The state
+only recovers on the next cable cycle.
+
+The driver already knows how to determine the real state:
+sm5502_muic_get_cable_type() reads ADC and DEV_TYPE1 and returns -EINVAL
+when no cable can be identified.  Ask the hardware instead of replaying
+both flags, so a coalesced pair resolves to whatever is actually plugged
+in.  A genuine attach and a genuine detach behave as before.
+---
+ drivers/extcon/extcon-sm5502.c | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index c8c4b9ef72..9ceedb64d0 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -531,13 +531,22 @@ static void sm5502_muic_irq_work(struct work_struct *work)
+ 
+ 	mutex_lock(&info->mutex);
+ 
+-	/* Detect attached or detached cables */
+-	if (info->irq_attach) {
+-		ret = sm5502_muic_cable_handler(info, true);
++	/*
++	 * Detect attached or detached cables.
++	 *
++	 * Both flags can be set in the same run, in which case replaying
++	 * them in order would leave the state of whichever came last.
++	 * Read the current cable type instead: a negative return means
++	 * nothing identifiable is connected.
++	 */
++	if (info->irq_attach || info->irq_detach) {
++		bool attached;
++
++		attached = sm5502_muic_get_cable_type(info) >= 0;
++
++		ret = sm5502_muic_cable_handler(info, attached);
++
+ 		info->irq_attach = false;
+-	}
+-	if (info->irq_detach) {
+-		ret = sm5502_muic_cable_handler(info, false);
+ 		info->irq_detach = false;
+ 	}
+ 
+-- 
+2.47.3
+

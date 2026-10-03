@@ -1,0 +1,2 @@
+# Camera (§57): the libcamera AIDL provider instance.
+android.hardware.camera.provider.ICameraProvider/libcamera/0    u:object_r:hal_camera_service:s0

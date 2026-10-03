@@ -1,0 +1,88 @@
+From b7e402b34fbeab6472524d03362310b22a89704a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 12:25:59 +0200
+Subject: [PATCH] tinyhal: report the presented position, not the written one
+
+out_pcm_get_presentation_position() returned every frame written so
+far, paired with the time at which the last of them would be heard
+(the kernel timestamp moved forward by the queued frames). AudioFlinger
+expects the frames already presented at the time of the snapshot, and
+derives from that pair the position and the clock of every track:
+with the written count, a media player's clock ran fast and playback
+never reached the end of the stream.
+
+Report frames_written minus the frames still queued in the ring buffer,
+at the kernel timestamp, and -ENODATA while the PCM is closed, as the
+other HALs do. Keep the counter in 64 bits.
+
+Change-Id: I7e033dabca9a22f4ed5c68fb685184f6a7c0c972
+---
+ audio/audio_hw.c | 34 +++++++++++++++++++++++++---------
+ 1 file changed, 25 insertions(+), 9 deletions(-)
+
+diff --git a/audio/audio_hw.c b/audio/audio_hw.c
+index 35e0edb..9a94b8e 100644
+--- a/audio/audio_hw.c
++++ b/audio/audio_hw.c
+@@ -148,8 +148,7 @@ struct stream_out_pcm {
+ 
+     uint32_t hw_sample_rate;    /* Actual sample rate of hardware */
+     int hw_channel_count;       /* Actual number of output channels */
+-    unsigned int frames_written;
+-    struct timespec timestamp;
++    uint64_t frames_written;    /* Since the stream was opened, across standby */
+ };
+ 
+ #ifdef TINYHAL_COMPRESS_PLAYBACK
+@@ -843,7 +842,6 @@ static ssize_t out_pcm_write(struct audio_stream_out *stream, const void *buffer
+     ALOGV_IF(ret < 0, "out_pcm_write: pcm_write failed: %d", ret);
+     if (ret >= 0) {
+         out->frames_written += pcm_bytes_to_frames(out->pcm, bytes);
+-        get_pcm_timestamp(out->pcm, out->common.sample_rate, &out->timestamp, true /*is_output*/);
+     }
+ 
+ exit:
+@@ -869,16 +867,34 @@ static int out_pcm_get_presentation_position(const struct audio_stream_out *stre
+         return -EINVAL;
+     }
+     struct stream_out_pcm *out = (struct stream_out_pcm *)stream;
++    unsigned int avail;
++    uint64_t queued;
++    int ret = -ENODATA;
+ 
+     ALOGV("+out_pcm_get_presentation_position(%p)", stream);
+ 
+-    *frames = out->frames_written;
+-    *timestamp = out->timestamp;
+-    ALOGV("%s: frames: %" PRIu64 ", timestamp (nsec): %" PRIu64, __func__, *frames,
+-          audio_utils_ns_from_timespec(timestamp));
++    /*
++     * The frames already presented, at the time the kernel took the
++     * snapshot: what was written minus what is still queued in the ring
++     * buffer.  AudioFlinger derives the position and the clock of every
++     * track from this pair, so reporting all the frames written at the
++     * time the last of them will be heard makes the clock of a player
++     * run fast and never reach the end of the stream.
++     */
++    pthread_mutex_lock(&out->common.lock);
++    if (out->pcm && pcm_get_htimestamp(out->pcm, &avail, timestamp) == 0) {
++        queued = pcm_get_buffer_size(out->pcm) - avail;
++        if (queued <= out->frames_written) {
++            *frames = out->frames_written - queued;
++            ret = 0;
++            ALOGV("%s: frames: %" PRIu64 ", timestamp (nsec): %" PRIu64, __func__, *frames,
++                  audio_utils_ns_from_timespec(timestamp));
++        }
++    }
++    pthread_mutex_unlock(&out->common.lock);
+ 
+-    ALOGV("-out_pcm_get_presentation_position(%p)", stream);
+-    return 0;
++    ALOGV("-out_pcm_get_presentation_position(%p) %d", stream, ret);
++    return ret;
+ }
+ 
+ static void do_close_out_pcm(struct audio_stream_out *stream)
+-- 
+2.47.3
+

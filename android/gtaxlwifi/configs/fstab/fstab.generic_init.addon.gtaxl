@@ -1,0 +1,13 @@
+#<src>				<mnt_point>				<type>		<mnt_flags and options>												<fs_mgr_flags>
+# system_ext is its own partition (§69): /system/system_ext is a symlink, and
+# fs_mgr refuses a mount point that is not canonical. Without this overlay
+# the generic's init_dev_config override (hardware_detect) is never read, no
+# USB gadget APEX is selected and apexd-bootstrap aborts: a boot loop.
+overlay				/system_ext/etc/init		overlay		ro,lowerdir=/vendor/etc/overlay-system_ext-etc-init:/system_ext/etc/init					nofail
+overlay				/vendor					overlay		rw,lowerdir=/vendor,upperdir=/mnt/scratch/vendor-upper,workdir=/mnt/scratch/vendor-work	nofail
+# /metadata in the first stage (§68.27): libinit reads
+# /metadata/.enable_insecure_debugging before the second stage mounts
+# anything. generic_init resolves by-name from the GPT names. nofail: a wiped
+# partition (fresh install) is formatted and mounted by the second stage, whose
+# entry is first_stage_mount + formattable (fstab.gtaxlwifi).
+/dev/block/by-name/metadata	/metadata				ext4		nosuid,nodev,noatime,errors=panic								nofail

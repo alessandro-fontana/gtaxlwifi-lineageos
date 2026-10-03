@@ -1,0 +1,48 @@
+From f5fdae3bc205b21f279f61d46f63e65e295755b2 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:53 +0000
+Subject: [PATCH] gpiolib: of: map the rt5659 vendor-prefixed GPIO names
+
+The realtek,rt5659 binding documents realtek,ldo1-en-gpios and
+realtek,reset-gpios, and boards (gtaxlwifi among them) follow it.  The
+driver however calls devm_gpiod_get_optional() with the plain
+"ldo1-en" and "reset" con_ids, so gpiolib looks for ldo1-en-gpios and
+reset-gpios, finds neither, and - both lookups being optional -
+returns NULL without a sound.  The codec is then never powered up:
+LDO1_EN stays low, the I2C pads clamp the bus, and probe fails with
+"Device with ID register 0 is not rt5659" after a bus-idle timeout.
+
+Add the rename entries for both compatibles covered by the binding.
+Verified on gtaxlwifi (Exynos 7870, RT5659 on gpd3): driving the two
+lines by hand releases the bus with the unmodified driver.
+---
+ drivers/gpio/gpiolib-of.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/gpio/gpiolib-of.c b/drivers/gpio/gpiolib-of.c
+index f36e4b171f..a5d385c84f 100644
+--- a/drivers/gpio/gpiolib-of.c
++++ b/drivers/gpio/gpiolib-of.c
+@@ -528,6 +528,19 @@ static struct gpio_desc *of_find_gpio_rename(struct device_node *np,
+ 		{ "en",		"s3fwrn5,en-gpios",	"samsung,s3fwrn5-i2c" },
+ 		{ "wake",	"s3fwrn5,fw-gpios",	"samsung,s3fwrn5-i2c" },
+ #endif
++#if IS_ENABLED(CONFIG_SND_SOC_RT5659)
++		/*
++		 * The rt5659 binding documents realtek,ldo1-en-gpios and
++		 * realtek,reset-gpios, but the driver requests plain
++		 * "ldo1-en" and "reset" con_ids; without this mapping the
++		 * optional lookups silently return NULL and the codec is
++		 * never powered up.
++		 */
++		{ "ldo1-en",	"realtek,ldo1-en-gpios",	"realtek,rt5659" },
++		{ "reset",	"realtek,reset-gpios",	"realtek,rt5659" },
++		{ "ldo1-en",	"realtek,ldo1-en-gpios",	"realtek,rt5658" },
++		{ "reset",	"realtek,reset-gpios",	"realtek,rt5658" },
++#endif
+ #if IS_ENABLED(CONFIG_PCI_LANTIQ)
+ 		/* MIPS Lantiq PCI */
+ 		{ "reset",	"gpio-reset",	"lantiq,pci-xway" },
+-- 
+2.47.3
+

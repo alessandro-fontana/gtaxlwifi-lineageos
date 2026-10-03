@@ -1,0 +1,1305 @@
+From 8823e1528fb85a89ef8773273028a4e3bb5652af Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 13:32:36 +0200
+Subject: [PATCH] media: i2c: add a driver for the SK hynix SR259
+
+The front camera of the Galaxy Tab A 10.1 (2016): 2 MP raw Bayer,
+one CSI-2 lane, 8-bit paged registers. One mode, 1632x1228 at 30 fps
+from 26 MHz, with the register sequence of the vendor driver
+(fimc-is-cis-sr259-setA.h), exposure, analogue gain (1x-8x) and
+vertical blanking.
+
+---
+ drivers/media/i2c/Kconfig  |   11 +
+ drivers/media/i2c/Makefile |    1 +
+ drivers/media/i2c/sr259.c  | 1244 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 1256 insertions(+)
+ create mode 100644 drivers/media/i2c/sr259.c
+
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+index 5d173e0ecf..c7acd4f634 100644
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -793,6 +793,17 @@ config VIDEO_S5K6A3
+ 	  This is a V4L2 sensor driver for Samsung S5K6A3 raw
+ 	  camera sensor.
+ 
++config VIDEO_SR259
++	tristate "SK hynix SR259 sensor support"
++	select V4L2_CCI_I2C
++	help
++	  This is a Video4Linux2 sensor driver for the SK hynix SR259
++	  2 MP raw Bayer camera, the front camera of the Samsung Galaxy
++	  Tab A 10.1 (2016).
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called sr259.
++
+ config VIDEO_S5KJN1
+ 	tristate "Samsung S5KJN1 sensor support"
+ 	select V4L2_CCI_I2C
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+index e45359efe0..987792c4d8 100644
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -129,6 +129,7 @@ obj-$(CONFIG_VIDEO_RJ54N1) += rj54n1cb0c.o
+ obj-$(CONFIG_VIDEO_S5C73M3) += s5c73m3/
+ obj-$(CONFIG_VIDEO_S5K3M5) += s5k3m5.o
+ obj-$(CONFIG_VIDEO_S5K5BAF) += s5k5baf.o
++obj-$(CONFIG_VIDEO_SR259) += sr259.o
+ obj-$(CONFIG_VIDEO_S5K6A3) += s5k6a3.o
+ obj-$(CONFIG_VIDEO_S5KJN1) += s5kjn1.o
+ obj-$(CONFIG_VIDEO_SAA6588) += saa6588.o
+diff --git a/drivers/media/i2c/sr259.c b/drivers/media/i2c/sr259.c
+new file mode 100644
+index 0000000000..e4271026e6
+--- /dev/null
++++ b/drivers/media/i2c/sr259.c
+@@ -0,0 +1,1244 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SK hynix SR259 image sensor driver
++ *
++ * 2 MP raw Bayer sensor, 1616x1212 active plus 16 border pixels on each
++ * axis, one MIPI CSI-2 lane, 10-bit output, 8-bit register addresses
++ * organised in pages (register 0x03 selects the page).
++ *
++ * The register sequence comes from the vendor driver of the Galaxy Tab A
++ * 10.1 (2016), fimc-is-cis-sr259-setA.h: it is the only mode the vendor
++ * uses, 1632x1228 at 30 fps from a 26 MHz clock.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <media/v4l2-cci.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-fwnode.h>
++
++#define SR259_MCLK			26000000
++#define SR259_LINK_FREQ			351000000ULL
++/* 26 MHz / 4 * 54 / 5: one lane, 10 bits, DDR */
++#define SR259_PIXEL_RATE		70200000
++#define SR259_DATA_LANES		1
++
++#define SR259_REG_PAGE			CCI_REG8(0x03)
++#define SR259_PAGE_0			0x00
++#define SR259_PAGE_20			0x20
++
++/* page 0 */
++#define SR259_REG_MODE			CCI_REG8(0x01)
++#define SR259_MODE_STREAMING		0x00
++#define SR259_MODE_SLEEP		0x20
++#define SR259_REG_ID			CCI_REG8(0x04)
++#define SR259_REG_REV			CCI_REG8(0x05)
++#define SR259_REG_HOLD			CCI_REG8(0x1f)
++#define SR259_REG_FLL_H			CCI_REG8(0x4e)
++#define SR259_REG_FLL_L			CCI_REG8(0x4f)
++
++/* page 0x20 */
++#define SR259_REG_EXPOSURE_H		CCI_REG8(0x22)
++#define SR259_REG_EXPOSURE_L		CCI_REG8(0x23)
++#define SR259_REG_AGAIN_MSB		CCI_REG8(0x60)
++#define SR259_REG_AGAIN_LSB		CCI_REG8(0x61)
++
++#define SR259_WIDTH			1632
++#define SR259_HEIGHT			1228
++#define SR259_LLP			1800
++#define SR259_FLL_DEF			1300
++#define SR259_FLL_MAX			0xffff
++#define SR259_EXPOSURE_MIN		1
++#define SR259_EXPOSURE_MARGIN		4
++
++/*
++ * Analogue gain in 1/16 steps. The sensor takes a 9-bit code c with
++ * gain = 256 / (c / 2 + 17): code 478 is 1x, and the vendor stops at code
++ * 30, which is 8x.
++ */
++#define SR259_AGAIN_MIN			16
++#define SR259_AGAIN_MAX			128
++#define SR259_AGAIN_DEF			16
++
++#define SR259_MBUS_CODE			MEDIA_BUS_FMT_SBGGR10_1X10
++
++static const struct reg_sequence sr259_init[] = {
++	{ 0x03, 0x02 },
++	{ 0x1f, 0x01 },
++	{ 0x03, 0x00 },
++	{ 0x07, 0x03 },
++	{ 0x08, 0x36 },
++	{ 0x09, 0x13 },
++	{ 0x07, 0x83 },
++	{ 0x07, 0x83 },
++	{ 0x07, 0x83 },
++	{ 0x0a, 0x80 },
++	{ 0x07, 0xc3 },
++	{ 0x03, 0x00 },
++	{ 0x10, 0x00 },
++	{ 0x11, 0x80 },
++	{ 0x13, 0x00 },
++	{ 0x14, 0x20 },
++	{ 0x15, 0x81 },
++	{ 0x17, 0x10 },
++	{ 0x1a, 0x00 },
++	{ 0x1c, 0x00 },
++	{ 0x1f, 0x00 },
++	{ 0x20, 0x00 },
++	{ 0x21, 0x00 },
++	{ 0x22, 0x00 },
++	{ 0x23, 0x00 },
++	{ 0x24, 0x00 },
++	{ 0x25, 0x00 },
++	{ 0x26, 0x00 },
++	{ 0x27, 0x00 },
++	{ 0x28, 0x04 },
++	{ 0x29, 0xcc },
++	{ 0x2a, 0x06 },
++	{ 0x2b, 0x60 },
++	{ 0x30, 0x00 },
++	{ 0x31, 0x00 },
++	{ 0x32, 0x00 },
++	{ 0x33, 0x00 },
++	{ 0x34, 0x00 },
++	{ 0x35, 0x00 },
++	{ 0x36, 0x00 },
++	{ 0x37, 0x00 },
++	{ 0x38, 0x02 },
++	{ 0x39, 0x66 },
++	{ 0x3a, 0x03 },
++	{ 0x3b, 0x30 },
++	{ 0x4c, 0x07 },
++	{ 0x4d, 0x08 },
++	{ 0x4e, 0x05 },
++	{ 0x4f, 0x14 },
++	{ 0x54, 0x02 },
++	{ 0x55, 0x03 },
++	{ 0x56, 0x04 },
++	{ 0x57, 0x40 },
++	{ 0x58, 0x03 },
++	{ 0x5c, 0x0a },
++	{ 0x60, 0x00 },
++	{ 0x61, 0x00 },
++	{ 0x62, 0x80 },
++	{ 0x68, 0x03 },
++	{ 0x69, 0x42 },
++	{ 0x80, 0x00 },
++	{ 0x81, 0x00 },
++	{ 0x82, 0x00 },
++	{ 0x83, 0x00 },
++	{ 0x84, 0x06 },
++	{ 0x85, 0x60 },
++	{ 0x86, 0x04 },
++	{ 0x87, 0xcc },
++	{ 0x88, 0x00 },
++	{ 0x89, 0x00 },
++	{ 0x8a, 0x02 },
++	{ 0x8b, 0x66 },
++	{ 0x90, 0x00 },
++	{ 0x91, 0x02 },
++	{ 0xa0, 0x00 },
++	{ 0xa1, 0x40 },
++	{ 0xa2, 0x40 },
++	{ 0xa3, 0x40 },
++	{ 0xa4, 0x40 },
++	{ 0xe4, 0x10 },
++	{ 0xe5, 0x00 },
++	{ 0x03, 0x01 },
++	{ 0x10, 0x21 },
++	{ 0x11, 0x08 },
++	{ 0x12, 0x3f },
++	{ 0x13, 0x08 },
++	{ 0x14, 0x44 },
++	{ 0x15, 0x01 },
++	{ 0x16, 0x00 },
++	{ 0x17, 0x02 },
++	{ 0x18, 0x00 },
++	{ 0x19, 0x00 },
++	{ 0x20, 0x60 },
++	{ 0x21, 0x00 },
++	{ 0x22, 0x10 },
++	{ 0x23, 0x4c },
++	{ 0x24, 0x5c },
++	{ 0x25, 0x00 },
++	{ 0x26, 0x60 },
++	{ 0x27, 0x07 },
++	{ 0x28, 0x80 },
++	{ 0x29, 0x00 },
++	{ 0x2a, 0xff },
++	{ 0x2b, 0x02 },
++	{ 0x2c, 0x80 },
++	{ 0x2d, 0x80 },
++	{ 0x2e, 0x80 },
++	{ 0x2f, 0x80 },
++	{ 0x85, 0x10 },
++	{ 0x30, 0x7b },
++	{ 0x31, 0x01 },
++	{ 0x32, 0xfe },
++	{ 0x33, 0x00 },
++	{ 0x34, 0x51 },
++	{ 0x35, 0xb6 },
++	{ 0x36, 0xfc },
++	{ 0x38, 0x66 },
++	{ 0x39, 0x66 },
++	{ 0x40, 0x00 },
++	{ 0x41, 0x00 },
++	{ 0x42, 0x00 },
++	{ 0x43, 0x00 },
++	{ 0x44, 0x00 },
++	{ 0x45, 0x00 },
++	{ 0x48, 0x00 },
++	{ 0x49, 0x00 },
++	{ 0x4a, 0x00 },
++	{ 0x4b, 0x00 },
++	{ 0x4c, 0x00 },
++	{ 0x4d, 0x00 },
++	{ 0x50, 0x00 },
++	{ 0x51, 0x00 },
++	{ 0x52, 0x00 },
++	{ 0x53, 0x00 },
++	{ 0x54, 0x00 },
++	{ 0x55, 0x00 },
++	{ 0x58, 0x00 },
++	{ 0x59, 0x00 },
++	{ 0x5a, 0x00 },
++	{ 0x5b, 0x00 },
++	{ 0x5c, 0x00 },
++	{ 0x5d, 0x00 },
++	{ 0x80, 0x00 },
++	{ 0x81, 0x00 },
++	{ 0x82, 0x00 },
++	{ 0x83, 0x00 },
++	{ 0x88, 0x20 },
++	{ 0x8a, 0x30 },
++	{ 0x8c, 0x00 },
++	{ 0x90, 0x00 },
++	{ 0x91, 0x60 },
++	{ 0x92, 0x00 },
++	{ 0x93, 0x60 },
++	{ 0x03, 0x02 },
++	{ 0x10, 0x00 },
++	{ 0x11, 0x00 },
++	{ 0x12, 0x70 },
++	{ 0x13, 0x00 },
++	{ 0x16, 0x00 },
++	{ 0x17, 0x00 },
++	{ 0x19, 0x00 },
++	{ 0x1a, 0x00 },
++	{ 0x1b, 0x00 },
++	{ 0x1c, 0xc0 },
++	{ 0x1d, 0x20 },
++	{ 0x20, 0x04 },
++	{ 0x21, 0x04 },
++	{ 0x22, 0x08 },
++	{ 0x23, 0x10 },
++	{ 0x24, 0x04 },
++	{ 0x28, 0x00 },
++	{ 0x29, 0x08 },
++	{ 0x2a, 0x00 },
++	{ 0x2e, 0x00 },
++	{ 0x2f, 0x2c },
++	{ 0x30, 0x00 },
++	{ 0x31, 0x44 },
++	{ 0x32, 0x02 },
++	{ 0x33, 0x00 },
++	{ 0x34, 0x00 },
++	{ 0x35, 0x00 },
++	{ 0x36, 0x06 },
++	{ 0x37, 0xc0 },
++	{ 0x38, 0x00 },
++	{ 0x39, 0x32 },
++	{ 0x3a, 0x02 },
++	{ 0x3b, 0x04 },
++	{ 0x3c, 0x04 },
++	{ 0x3d, 0xfe },
++	{ 0x3e, 0x00 },
++	{ 0x3f, 0x00 },
++	{ 0x40, 0x00 },
++	{ 0x41, 0x14 },
++	{ 0x42, 0x01 },
++	{ 0x43, 0x25 },
++	{ 0x47, 0x00 },
++	{ 0x48, 0x9a },
++	{ 0x49, 0x24 },
++	{ 0x4a, 0x0f },
++	{ 0x4b, 0x20 },
++	{ 0x4c, 0x06 },
++	{ 0x4d, 0xc0 },
++	{ 0x50, 0xa9 },
++	{ 0x51, 0x1c },
++	{ 0x52, 0x73 },
++	{ 0x54, 0xc0 },
++	{ 0x55, 0x40 },
++	{ 0x56, 0x11 },
++	{ 0x57, 0x00 },
++	{ 0x58, 0x18 },
++	{ 0x59, 0x16 },
++	{ 0x5b, 0x00 },
++	{ 0x62, 0x00 },
++	{ 0x63, 0xc8 },
++	{ 0x67, 0x3f },
++	{ 0x68, 0xc0 },
++	{ 0x70, 0x03 },
++	{ 0x71, 0xc7 },
++	{ 0x72, 0x06 },
++	{ 0x73, 0x75 },
++	{ 0x74, 0x03 },
++	{ 0x75, 0xc7 },
++	{ 0x76, 0x05 },
++	{ 0x77, 0x1d },
++	{ 0xa0, 0x01 },
++	{ 0xa1, 0x48 },
++	{ 0xa2, 0x02 },
++	{ 0xa3, 0xde },
++	{ 0xa4, 0x02 },
++	{ 0xa5, 0xde },
++	{ 0xa6, 0x06 },
++	{ 0xa7, 0xf0 },
++	{ 0xb0, 0x02 },
++	{ 0xb1, 0x0f },
++	{ 0xb2, 0x02 },
++	{ 0xb3, 0xdb },
++	{ 0xb4, 0x03 },
++	{ 0xb5, 0xc7 },
++	{ 0xb6, 0x06 },
++	{ 0xb7, 0xd7 },
++	{ 0xc0, 0x02 },
++	{ 0xc1, 0x0f },
++	{ 0xc2, 0x02 },
++	{ 0xc3, 0xdd },
++	{ 0xc4, 0x03 },
++	{ 0xc5, 0xc7 },
++	{ 0xc6, 0x06 },
++	{ 0xc7, 0xdb },
++	{ 0xc8, 0x01 },
++	{ 0xc9, 0x8e },
++	{ 0xca, 0x01 },
++	{ 0xcb, 0x3e },
++	{ 0xcc, 0x03 },
++	{ 0xcd, 0x1e },
++	{ 0xce, 0x02 },
++	{ 0xcf, 0xe2 },
++	{ 0xd0, 0x00 },
++	{ 0xd1, 0x00 },
++	{ 0xd2, 0x00 },
++	{ 0xd3, 0x00 },
++	{ 0xd4, 0x0c },
++	{ 0xd5, 0x00 },
++	{ 0xe0, 0x1c },
++	{ 0xe1, 0x1c },
++	{ 0xe2, 0x1c },
++	{ 0xe3, 0x04 },
++	{ 0xe4, 0x1c },
++	{ 0xe5, 0x01 },
++	{ 0xe8, 0x00 },
++	{ 0xe9, 0x00 },
++	{ 0xea, 0x00 },
++	{ 0xeb, 0x00 },
++	{ 0xec, 0x00 },
++	{ 0xed, 0x00 },
++	{ 0xf0, 0x70 },
++	{ 0xf1, 0x00 },
++	{ 0xf2, 0x82 },
++	{ 0xf3, 0x00 },
++	{ 0x03, 0x03 },
++	{ 0x10, 0x00 },
++	{ 0x11, 0x80 },
++	{ 0x12, 0x00 },
++	{ 0x13, 0x02 },
++	{ 0x14, 0x06 },
++	{ 0x15, 0xeb },
++	{ 0x16, 0x06 },
++	{ 0x17, 0xf5 },
++	{ 0x18, 0x01 },
++	{ 0x19, 0x02 },
++	{ 0x1a, 0x06 },
++	{ 0x1b, 0xda },
++	{ 0x1c, 0x01 },
++	{ 0x1d, 0x02 },
++	{ 0x1e, 0x06 },
++	{ 0x1f, 0xda },
++	{ 0x20, 0x01 },
++	{ 0x21, 0x02 },
++	{ 0x22, 0x01 },
++	{ 0x23, 0x34 },
++	{ 0x24, 0x01 },
++	{ 0x25, 0x02 },
++	{ 0x26, 0xff },
++	{ 0x27, 0xff },
++	{ 0x28, 0x01 },
++	{ 0x29, 0x02 },
++	{ 0x2a, 0x01 },
++	{ 0x2b, 0x3e },
++	{ 0x2c, 0x01 },
++	{ 0x2d, 0x02 },
++	{ 0x2e, 0x01 },
++	{ 0x2f, 0x3e },
++	{ 0x30, 0x01 },
++	{ 0x31, 0x48 },
++	{ 0x32, 0x06 },
++	{ 0x33, 0xda },
++	{ 0x34, 0x01 },
++	{ 0x35, 0x48 },
++	{ 0x36, 0x06 },
++	{ 0x37, 0xda },
++	{ 0x38, 0x06 },
++	{ 0x39, 0xf1 },
++	{ 0x3a, 0x06 },
++	{ 0x3b, 0xfb },
++	{ 0x3c, 0x00 },
++	{ 0x3d, 0x0c },
++	{ 0x3e, 0x00 },
++	{ 0x3f, 0x16 },
++	{ 0x40, 0x00 },
++	{ 0x41, 0x04 },
++	{ 0x42, 0x00 },
++	{ 0x43, 0x45 },
++	{ 0x44, 0x00 },
++	{ 0x45, 0x02 },
++	{ 0x46, 0x00 },
++	{ 0x47, 0x74 },
++	{ 0x48, 0x00 },
++	{ 0x49, 0x06 },
++	{ 0x4a, 0x00 },
++	{ 0x4b, 0x42 },
++	{ 0x4c, 0x00 },
++	{ 0x4d, 0x06 },
++	{ 0x4e, 0x00 },
++	{ 0x4f, 0x42 },
++	{ 0x50, 0x00 },
++	{ 0x51, 0x0a },
++	{ 0x52, 0x00 },
++	{ 0x53, 0x32 },
++	{ 0x54, 0x00 },
++	{ 0x55, 0x0a },
++	{ 0x56, 0x00 },
++	{ 0x57, 0x32 },
++	{ 0x58, 0x00 },
++	{ 0x59, 0x0a },
++	{ 0x5a, 0x00 },
++	{ 0x5b, 0x32 },
++	{ 0x60, 0x00 },
++	{ 0x61, 0x04 },
++	{ 0x62, 0x00 },
++	{ 0x63, 0x12 },
++	{ 0x64, 0x00 },
++	{ 0x65, 0x04 },
++	{ 0x66, 0x00 },
++	{ 0x67, 0x12 },
++	{ 0x68, 0x00 },
++	{ 0x69, 0x04 },
++	{ 0x6a, 0x00 },
++	{ 0x6b, 0x4a },
++	{ 0x70, 0x00 },
++	{ 0x71, 0xda },
++	{ 0x72, 0x06 },
++	{ 0x73, 0xe0 },
++	{ 0x74, 0x00 },
++	{ 0x75, 0xe0 },
++	{ 0x76, 0x00 },
++	{ 0x77, 0xfc },
++	{ 0x78, 0x00 },
++	{ 0x79, 0xe0 },
++	{ 0x7a, 0x00 },
++	{ 0x7b, 0xfc },
++	{ 0x7c, 0x06 },
++	{ 0x7d, 0xdc },
++	{ 0x7e, 0x06 },
++	{ 0x7f, 0xe4 },
++	{ 0x80, 0x02 },
++	{ 0x81, 0xe2 },
++	{ 0x82, 0x03 },
++	{ 0x83, 0x28 },
++	{ 0x84, 0x02 },
++	{ 0x85, 0xe2 },
++	{ 0x86, 0x03 },
++	{ 0x87, 0x28 },
++	{ 0x88, 0x06 },
++	{ 0x89, 0xdc },
++	{ 0x8a, 0x06 },
++	{ 0x8b, 0xe4 },
++	{ 0x90, 0x00 },
++	{ 0x91, 0xd9 },
++	{ 0x92, 0x06 },
++	{ 0x93, 0xd9 },
++	{ 0x94, 0x00 },
++	{ 0x95, 0xd9 },
++	{ 0x96, 0x06 },
++	{ 0x97, 0xd9 },
++	{ 0x98, 0x06 },
++	{ 0x99, 0xd9 },
++	{ 0x9a, 0x00 },
++	{ 0x9b, 0xd9 },
++	{ 0x9c, 0x06 },
++	{ 0x9d, 0xd9 },
++	{ 0x9e, 0x00 },
++	{ 0x9f, 0xd9 },
++	{ 0xa0, 0x00 },
++	{ 0xa1, 0x05 },
++	{ 0xa2, 0x00 },
++	{ 0xa3, 0x13 },
++	{ 0xa4, 0x00 },
++	{ 0xa5, 0x05 },
++	{ 0xa6, 0x00 },
++	{ 0xa7, 0x13 },
++	{ 0xa8, 0x00 },
++	{ 0xa9, 0xde },
++	{ 0xaa, 0x00 },
++	{ 0xab, 0xee },
++	{ 0xac, 0x00 },
++	{ 0xad, 0xdd },
++	{ 0xae, 0x00 },
++	{ 0xaf, 0xed },
++	{ 0xb0, 0x06 },
++	{ 0xb1, 0xe1 },
++	{ 0xb2, 0x00 },
++	{ 0xb3, 0xff },
++	{ 0xb4, 0x06 },
++	{ 0xb5, 0xe1 },
++	{ 0xb6, 0x00 },
++	{ 0xb7, 0xff },
++	{ 0xe0, 0x00 },
++	{ 0xe1, 0xda },
++	{ 0xe2, 0x02 },
++	{ 0xe3, 0xde },
++	{ 0xe4, 0x03 },
++	{ 0xe5, 0x05 },
++	{ 0xe6, 0x06 },
++	{ 0xe7, 0xda },
++	{ 0xe8, 0x01 },
++	{ 0xe9, 0x00 },
++	{ 0xea, 0x02 },
++	{ 0xeb, 0xde },
++	{ 0xec, 0x06 },
++	{ 0xed, 0xfc },
++	{ 0xee, 0x00 },
++	{ 0xef, 0x00 },
++	{ 0xf6, 0x00 },
++	{ 0xf7, 0x12 },
++	{ 0xf8, 0x00 },
++	{ 0xf9, 0x1c },
++	{ 0x03, 0x04 },
++	{ 0x10, 0x02 },
++	{ 0x11, 0x05 },
++	{ 0x12, 0x00 },
++	{ 0x13, 0x00 },
++	{ 0x14, 0x02 },
++	{ 0x1a, 0x00 },
++	{ 0x1b, 0x30 },
++	{ 0x1c, 0x00 },
++	{ 0x1d, 0xc0 },
++	{ 0x1e, 0x44 },
++	{ 0x20, 0x00 },
++	{ 0x21, 0x38 },
++	{ 0x22, 0x00 },
++	{ 0x23, 0x70 },
++	{ 0x24, 0x00 },
++	{ 0x25, 0xa8 },
++	{ 0x26, 0x00 },
++	{ 0x27, 0xc5 },
++	{ 0x28, 0x01 },
++	{ 0x29, 0x8a },
++	{ 0x2a, 0x02 },
++	{ 0x2b, 0x4f },
++	{ 0x30, 0x01 },
++	{ 0x31, 0x3c },
++	{ 0x32, 0x01 },
++	{ 0x33, 0x3c },
++	{ 0x34, 0x01 },
++	{ 0x35, 0x34 },
++	{ 0x36, 0x01 },
++	{ 0x37, 0x02 },
++	{ 0x38, 0x01 },
++	{ 0x39, 0x02 },
++	{ 0x3a, 0x01 },
++	{ 0x3b, 0x02 },
++	{ 0x40, 0x01 },
++	{ 0x41, 0x3e },
++	{ 0x42, 0x01 },
++	{ 0x43, 0x3e },
++	{ 0x44, 0x01 },
++	{ 0x45, 0x3e },
++	{ 0x46, 0x01 },
++	{ 0x47, 0x02 },
++	{ 0x48, 0x01 },
++	{ 0x49, 0x02 },
++	{ 0x4a, 0x01 },
++	{ 0x4b, 0x02 },
++	{ 0x50, 0x00 },
++	{ 0x58, 0x00 },
++	{ 0x59, 0xdc },
++	{ 0x5a, 0x06 },
++	{ 0x5b, 0xe0 },
++	{ 0x5c, 0x00 },
++	{ 0x5d, 0xdc },
++	{ 0x5e, 0x06 },
++	{ 0x5f, 0xe0 },
++	{ 0x60, 0x00 },
++	{ 0x61, 0x60 },
++	{ 0x62, 0x00 },
++	{ 0x63, 0x40 },
++	{ 0x64, 0x00 },
++	{ 0x65, 0x60 },
++	{ 0x66, 0x00 },
++	{ 0x67, 0x40 },
++	{ 0x68, 0x00 },
++	{ 0x69, 0x60 },
++	{ 0x6a, 0x00 },
++	{ 0x6b, 0x40 },
++	{ 0x70, 0x18 },
++	{ 0x71, 0x20 },
++	{ 0x72, 0x20 },
++	{ 0x73, 0x00 },
++	{ 0x80, 0x6f },
++	{ 0x81, 0x00 },
++	{ 0x82, 0x2f },
++	{ 0x83, 0x00 },
++	{ 0x84, 0x13 },
++	{ 0x85, 0x01 },
++	{ 0x86, 0x00 },
++	{ 0x87, 0x00 },
++	{ 0x90, 0x03 },
++	{ 0x91, 0x06 },
++	{ 0x92, 0x06 },
++	{ 0x93, 0x06 },
++	{ 0x94, 0x06 },
++	{ 0x95, 0x15 },
++	{ 0x96, 0x39 },
++	{ 0x97, 0x4c },
++	{ 0x98, 0x54 },
++	{ 0xa0, 0x06 },
++	{ 0xa1, 0xda },
++	{ 0xa2, 0x06 },
++	{ 0xa3, 0xda },
++	{ 0xa4, 0x06 },
++	{ 0xa5, 0xda },
++	{ 0xa6, 0x01 },
++	{ 0xa7, 0x02 },
++	{ 0xa8, 0x01 },
++	{ 0xa9, 0x02 },
++	{ 0xaa, 0x01 },
++	{ 0xab, 0x02 },
++	{ 0xb0, 0x04 },
++	{ 0xb1, 0x04 },
++	{ 0xb2, 0x00 },
++	{ 0xb3, 0x04 },
++	{ 0xb4, 0x00 },
++	{ 0xc0, 0x00 },
++	{ 0xc1, 0x48 },
++	{ 0xc2, 0x00 },
++	{ 0xc3, 0x6e },
++	{ 0xc4, 0x00 },
++	{ 0xc5, 0x4d },
++	{ 0xc6, 0x00 },
++	{ 0xc7, 0x6c },
++	{ 0xc8, 0x00 },
++	{ 0xc9, 0x4f },
++	{ 0xca, 0x00 },
++	{ 0xcb, 0x6a },
++	{ 0xcc, 0x00 },
++	{ 0xcd, 0x50 },
++	{ 0xce, 0x00 },
++	{ 0xcf, 0x68 },
++	{ 0xd0, 0x07 },
++	{ 0xd1, 0x00 },
++	{ 0xd2, 0x03 },
++	{ 0xd3, 0x03 },
++	{ 0xe0, 0x00 },
++	{ 0xe1, 0x10 },
++	{ 0xe2, 0x67 },
++	{ 0xe3, 0x00 },
++	{ 0x03, 0x08 },
++	{ 0x10, 0x07 },
++	{ 0x20, 0x01 },
++	{ 0x21, 0x00 },
++	{ 0x22, 0x01 },
++	{ 0x23, 0x00 },
++	{ 0x24, 0x01 },
++	{ 0x25, 0x00 },
++	{ 0x26, 0x01 },
++	{ 0x27, 0x00 },
++	{ 0x28, 0x01 },
++	{ 0x29, 0x00 },
++	{ 0x2a, 0x01 },
++	{ 0x2b, 0x00 },
++	{ 0x2c, 0x01 },
++	{ 0x2d, 0x00 },
++	{ 0x2e, 0x01 },
++	{ 0x2f, 0x00 },
++	{ 0x30, 0x03 },
++	{ 0x31, 0xff },
++	{ 0x32, 0x03 },
++	{ 0x33, 0xff },
++	{ 0x34, 0x03 },
++	{ 0x35, 0xff },
++	{ 0x36, 0x03 },
++	{ 0x37, 0xff },
++	{ 0x40, 0x07 },
++	{ 0x50, 0x01 },
++	{ 0x51, 0x00 },
++	{ 0x52, 0x01 },
++	{ 0x53, 0x00 },
++	{ 0x54, 0x0f },
++	{ 0x55, 0xff },
++	{ 0x03, 0x10 },
++	{ 0x10, 0x00 },
++	{ 0x11, 0x00 },
++	{ 0x03, 0x20 },
++	{ 0x10, 0x00 },
++	{ 0x11, 0x05 },
++	{ 0x12, 0x03 },
++	{ 0x22, 0x01 },
++	{ 0x23, 0x4d },
++	{ 0x26, 0xff },
++	{ 0x27, 0xff },
++	{ 0x29, 0x00 },
++	{ 0x2a, 0x02 },
++	{ 0x2b, 0x00 },
++	{ 0x2c, 0x04 },
++	{ 0x30, 0x00 },
++	{ 0x31, 0x04 },
++	{ 0x40, 0x09 },
++	{ 0x41, 0x1e },
++	{ 0x42, 0x60 },
++	{ 0x52, 0x0f },
++	{ 0x53, 0xf3 },
++	{ 0x60, 0xef },
++	{ 0x61, 0x00 },
++	{ 0x64, 0x0f },
++	{ 0x65, 0x00 },
++	{ 0x03, 0x05 },
++	{ 0x39, 0x46 },
++	{ 0x4c, 0x20 },
++	{ 0x4d, 0x00 },
++	{ 0x4e, 0x40 },
++	{ 0x4f, 0x00 },
++	{ 0x11, 0x00 },
++	{ 0x14, 0x01 },
++	{ 0x16, 0x12 },
++	{ 0x18, 0x80 },
++	{ 0x19, 0x00 },
++	{ 0x1a, 0xf0 },
++	{ 0x24, 0x2b },
++	{ 0x32, 0x1e },
++	{ 0x33, 0x0f },
++	{ 0x34, 0x06 },
++	{ 0x35, 0x05 },
++	{ 0x36, 0x01 },
++	{ 0x37, 0x08 },
++	{ 0x1c, 0x01 },
++	{ 0x1d, 0x09 },
++	{ 0x1e, 0x0f },
++	{ 0x1f, 0x0b },
++	{ 0x30, 0x07 },
++	{ 0x31, 0xf8 },
++	{ 0x10, 0x1d },
++};
++
++static const s64 sr259_link_freqs[] = { SR259_LINK_FREQ };
++
++static const char * const sr259_supply_names[] = {
++	"vddio",	/* 1.8 V interface */
++	"avdd",		/* 2.8 V analog */
++};
++
++struct sr259 {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *mclk;
++	struct regulator_bulk_data supplies[ARRAY_SIZE(sr259_supply_names)];
++	struct gpio_desc *reset;
++	struct gpio_desc *enable;
++
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++	struct v4l2_ctrl_handler ctrls;
++	struct v4l2_ctrl *exposure;
++	struct v4l2_ctrl *vblank;
++};
++
++static inline struct sr259 *to_sr259(struct v4l2_subdev *sd)
++{
++	return container_of(sd, struct sr259, sd);
++}
++
++static int sr259_power_on(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct sr259 *sensor = to_sr259(sd);
++	int ret;
++
++	/* The vendor order: supplies, clock, standby released, reset released. */
++	ret = regulator_bulk_enable(ARRAY_SIZE(sensor->supplies),
++				    sensor->supplies);
++	if (ret)
++		return ret;
++	usleep_range(10000, 11000);
++
++	ret = clk_prepare_enable(sensor->mclk);
++	if (ret)
++		goto err_supplies;
++	usleep_range(10000, 11000);
++
++	gpiod_set_value_cansleep(sensor->enable, 1);
++	msleep(30);
++	gpiod_set_value_cansleep(sensor->reset, 0);
++	usleep_range(1000, 1100);
++
++	return 0;
++
++err_supplies:
++	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
++	return ret;
++}
++
++static int sr259_power_off(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct sr259 *sensor = to_sr259(sd);
++
++	gpiod_set_value_cansleep(sensor->reset, 1);
++	usleep_range(20, 30);
++	clk_disable_unprepare(sensor->mclk);
++	gpiod_set_value_cansleep(sensor->enable, 0);
++	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
++
++	return 0;
++}
++
++static int sr259_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct sr259 *sensor = container_of(ctrl->handler, struct sr259, ctrls);
++	int ret = 0;
++	u32 code;
++
++	if (ctrl->id == V4L2_CID_VBLANK) {
++		s64 max = SR259_HEIGHT + ctrl->val - SR259_EXPOSURE_MARGIN;
++
++		ret = __v4l2_ctrl_modify_range(sensor->exposure,
++					       sensor->exposure->minimum, max,
++					       sensor->exposure->step,
++					       min_t(s64, sensor->exposure->default_value, max));
++		if (ret)
++			return ret;
++	}
++
++	if (!pm_runtime_get_if_in_use(sensor->dev))
++		return 0;
++
++	cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_0, &ret);
++	cci_write(sensor->regmap, SR259_REG_HOLD, 1, &ret);
++
++	switch (ctrl->id) {
++	case V4L2_CID_EXPOSURE:
++		cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_20, &ret);
++		cci_write(sensor->regmap, SR259_REG_EXPOSURE_H, ctrl->val >> 8, &ret);
++		cci_write(sensor->regmap, SR259_REG_EXPOSURE_L, ctrl->val & 0xff, &ret);
++		break;
++	case V4L2_CID_ANALOGUE_GAIN:
++		code = 8192 / ctrl->val - 34;
++		cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_20, &ret);
++		cci_write(sensor->regmap, SR259_REG_AGAIN_MSB, code >> 1, &ret);
++		cci_write(sensor->regmap, SR259_REG_AGAIN_LSB, code & 1, &ret);
++		break;
++	case V4L2_CID_VBLANK:
++		cci_write(sensor->regmap, SR259_REG_FLL_H,
++			  (SR259_HEIGHT + ctrl->val) >> 8, &ret);
++		cci_write(sensor->regmap, SR259_REG_FLL_L,
++			  (SR259_HEIGHT + ctrl->val) & 0xff, &ret);
++		break;
++	default:
++		break;
++	}
++
++	cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_0, &ret);
++	cci_write(sensor->regmap, SR259_REG_HOLD, 0, &ret);
++
++	pm_runtime_put(sensor->dev);
++
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops sr259_ctrl_ops = {
++	.s_ctrl = sr259_set_ctrl,
++};
++
++static int sr259_init_controls(struct sr259 *sensor)
++{
++	struct v4l2_ctrl_handler *hdl = &sensor->ctrls;
++	struct v4l2_fwnode_device_properties props;
++	struct v4l2_ctrl *ctrl;
++	int ret;
++
++	v4l2_ctrl_handler_init(hdl, 9);
++
++	ctrl = v4l2_ctrl_new_int_menu(hdl, &sr259_ctrl_ops, V4L2_CID_LINK_FREQ,
++				      0, 0, sr259_link_freqs);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	v4l2_ctrl_new_std(hdl, &sr259_ctrl_ops, V4L2_CID_PIXEL_RATE,
++			  SR259_PIXEL_RATE, SR259_PIXEL_RATE, 1,
++			  SR259_PIXEL_RATE);
++
++	ctrl = v4l2_ctrl_new_std(hdl, &sr259_ctrl_ops, V4L2_CID_HBLANK,
++				 SR259_LLP - SR259_WIDTH,
++				 SR259_LLP - SR259_WIDTH, 1,
++				 SR259_LLP - SR259_WIDTH);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	sensor->vblank = v4l2_ctrl_new_std(hdl, &sr259_ctrl_ops,
++					   V4L2_CID_VBLANK,
++					   SR259_FLL_DEF - SR259_HEIGHT,
++					   SR259_FLL_MAX - SR259_HEIGHT, 1,
++					   SR259_FLL_DEF - SR259_HEIGHT);
++
++	sensor->exposure = v4l2_ctrl_new_std(hdl, &sr259_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     SR259_EXPOSURE_MIN,
++					     SR259_FLL_DEF - SR259_EXPOSURE_MARGIN,
++					     1, 333);
++
++	v4l2_ctrl_new_std(hdl, &sr259_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
++			  SR259_AGAIN_MIN, SR259_AGAIN_MAX, 1,
++			  SR259_AGAIN_DEF);
++
++	ret = v4l2_fwnode_device_parse(sensor->dev, &props);
++	if (ret)
++		return ret;
++	v4l2_ctrl_new_fwnode_properties(hdl, &sr259_ctrl_ops, &props);
++
++	if (hdl->error)
++		return hdl->error;
++
++	sensor->sd.ctrl_handler = hdl;
++	return 0;
++}
++
++static void sr259_fill_format(struct v4l2_mbus_framefmt *fmt)
++{
++	fmt->width = SR259_WIDTH;
++	fmt->height = SR259_HEIGHT;
++	fmt->code = SR259_MBUS_CODE;
++	fmt->field = V4L2_FIELD_NONE;
++	fmt->colorspace = V4L2_COLORSPACE_RAW;
++	fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	fmt->xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
++static int sr259_enable_streams(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *state, u32 pad,
++				u64 streams_mask)
++{
++	struct sr259 *sensor = to_sr259(sd);
++	int ret;
++
++	ret = pm_runtime_resume_and_get(sensor->dev);
++	if (ret)
++		return ret;
++
++	ret = regmap_multi_reg_write(sensor->regmap, sr259_init,
++				     ARRAY_SIZE(sr259_init));
++	if (ret)
++		goto err;
++
++	ret = __v4l2_ctrl_handler_setup(sd->ctrl_handler);
++	if (ret)
++		goto err;
++
++	cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_0, &ret);
++	cci_write(sensor->regmap, SR259_REG_MODE, SR259_MODE_STREAMING, &ret);
++	if (ret)
++		goto err;
++
++	return 0;
++
++err:
++	dev_err(sensor->dev, "failed to start streaming: %d\n", ret);
++	pm_runtime_put(sensor->dev);
++	return ret;
++}
++
++static int sr259_disable_streams(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state, u32 pad,
++				 u64 streams_mask)
++{
++	struct sr259 *sensor = to_sr259(sd);
++	int ret = 0;
++
++	cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_0, &ret);
++	cci_write(sensor->regmap, SR259_REG_MODE, SR259_MODE_SLEEP, &ret);
++	pm_runtime_put(sensor->dev);
++
++	return ret;
++}
++
++static int sr259_enum_mbus_code(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *state,
++				struct v4l2_subdev_mbus_code_enum *code)
++{
++	if (code->index)
++		return -EINVAL;
++	code->code = SR259_MBUS_CODE;
++	return 0;
++}
++
++static int sr259_enum_frame_size(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state,
++				 struct v4l2_subdev_frame_size_enum *fse)
++{
++	if (fse->index || fse->code != SR259_MBUS_CODE)
++		return -EINVAL;
++	fse->min_width = fse->max_width = SR259_WIDTH;
++	fse->min_height = fse->max_height = SR259_HEIGHT;
++	return 0;
++}
++
++static int sr259_set_fmt(struct v4l2_subdev *sd,
++			 struct v4l2_subdev_state *state,
++			 struct v4l2_subdev_format *fmt)
++{
++	/* One mode only: whatever is asked, this is what is set. */
++	sr259_fill_format(&fmt->format);
++	*v4l2_subdev_state_get_format(state, fmt->pad) = fmt->format;
++	return 0;
++}
++
++static int sr259_get_selection(struct v4l2_subdev *sd,
++			       struct v4l2_subdev_state *state,
++			       struct v4l2_subdev_selection *sel)
++{
++	switch (sel->target) {
++	case V4L2_SEL_TGT_CROP:
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++		sel->r.left = 0;
++		sel->r.top = 0;
++		sel->r.width = SR259_WIDTH;
++		sel->r.height = SR259_HEIGHT;
++		return 0;
++	}
++	return -EINVAL;
++}
++
++static int sr259_init_state(struct v4l2_subdev *sd,
++			    struct v4l2_subdev_state *state)
++{
++	sr259_fill_format(v4l2_subdev_state_get_format(state, 0));
++	return 0;
++}
++
++static const struct v4l2_subdev_video_ops sr259_video_ops = {
++	.s_stream = v4l2_subdev_s_stream_helper,
++};
++
++static const struct v4l2_subdev_pad_ops sr259_pad_ops = {
++	.enum_mbus_code = sr259_enum_mbus_code,
++	.enum_frame_size = sr259_enum_frame_size,
++	.get_fmt = v4l2_subdev_get_fmt,
++	.set_fmt = sr259_set_fmt,
++	.get_selection = sr259_get_selection,
++	.enable_streams = sr259_enable_streams,
++	.disable_streams = sr259_disable_streams,
++};
++
++static const struct v4l2_subdev_ops sr259_subdev_ops = {
++	.video = &sr259_video_ops,
++	.pad = &sr259_pad_ops,
++};
++
++static const struct v4l2_subdev_internal_ops sr259_internal_ops = {
++	.init_state = sr259_init_state,
++};
++
++static int sr259_identify(struct sr259 *sensor)
++{
++	u64 id = 0, rev = 0;
++	int ret = 0;
++
++	cci_write(sensor->regmap, SR259_REG_PAGE, SR259_PAGE_0, &ret);
++	cci_read(sensor->regmap, SR259_REG_ID, &id, &ret);
++	cci_read(sensor->regmap, SR259_REG_REV, &rev, &ret);
++	if (ret)
++		return dev_err_probe(sensor->dev, ret,
++				     "sensor does not answer on the bus\n");
++
++	dev_info(sensor->dev, "SR259 id 0x%02llx rev 0x%02llx\n", id, rev);
++	return 0;
++}
++
++static int sr259_check_endpoint(struct sr259 *sensor)
++{
++	struct v4l2_fwnode_endpoint ep = { .bus_type = V4L2_MBUS_CSI2_DPHY };
++	struct fwnode_handle *fwnode;
++	unsigned long bitmap;
++	int ret;
++
++	fwnode = fwnode_graph_get_next_endpoint(dev_fwnode(sensor->dev), NULL);
++	if (!fwnode)
++		return dev_err_probe(sensor->dev, -EINVAL, "no endpoint\n");
++
++	ret = v4l2_fwnode_endpoint_alloc_parse(fwnode, &ep);
++	fwnode_handle_put(fwnode);
++	if (ret)
++		return ret;
++
++	if (ep.bus.mipi_csi2.num_data_lanes != SR259_DATA_LANES) {
++		ret = dev_err_probe(sensor->dev, -EINVAL,
++				    "one data lane is supported\n");
++		goto out;
++	}
++
++	ret = v4l2_link_freq_to_bitmap(sensor->dev, ep.link_frequencies,
++				       ep.nr_of_link_frequencies,
++				       sr259_link_freqs,
++				       ARRAY_SIZE(sr259_link_freqs), &bitmap);
++out:
++	v4l2_fwnode_endpoint_free(&ep);
++	return ret;
++}
++
++static int sr259_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct sr259 *sensor;
++	unsigned int i;
++	int ret;
++
++	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
++	if (!sensor)
++		return -ENOMEM;
++	sensor->dev = dev;
++
++	ret = sr259_check_endpoint(sensor);
++	if (ret)
++		return ret;
++
++	sensor->regmap = devm_cci_regmap_init_i2c(client, 8);
++	if (IS_ERR(sensor->regmap))
++		return PTR_ERR(sensor->regmap);
++
++	sensor->mclk = devm_v4l2_sensor_clk_get(dev, NULL);
++	if (IS_ERR(sensor->mclk))
++		return dev_err_probe(dev, PTR_ERR(sensor->mclk),
++				     "failed to get the clock\n");
++	if (clk_get_rate(sensor->mclk) != SR259_MCLK)
++		return dev_err_probe(dev, -EINVAL, "clock is %lu Hz, not %u\n",
++				     clk_get_rate(sensor->mclk), SR259_MCLK);
++
++	for (i = 0; i < ARRAY_SIZE(sr259_supply_names); i++)
++		sensor->supplies[i].supply = sr259_supply_names[i];
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(sensor->supplies),
++				      sensor->supplies);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get supplies\n");
++
++	sensor->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(sensor->reset))
++		return dev_err_probe(dev, PTR_ERR(sensor->reset),
++				     "failed to get reset gpio\n");
++	sensor->enable = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(sensor->enable))
++		return dev_err_probe(dev, PTR_ERR(sensor->enable),
++				     "failed to get enable gpio\n");
++
++	v4l2_i2c_subdev_init(&sensor->sd, client, &sr259_subdev_ops);
++	sensor->sd.internal_ops = &sr259_internal_ops;
++
++	ret = sr259_power_on(dev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to power on\n");
++
++	ret = sr259_identify(sensor);
++	if (ret)
++		goto err_power;
++
++	ret = sr259_init_controls(sensor);
++	if (ret)
++		goto err_ctrls;
++
++	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	sensor->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
++	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
++	if (ret)
++		goto err_ctrls;
++
++	sensor->sd.state_lock = sensor->ctrls.lock;
++	ret = v4l2_subdev_init_finalize(&sensor->sd);
++	if (ret)
++		goto err_entity;
++
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_set_autosuspend_delay(dev, 1000);
++	pm_runtime_use_autosuspend(dev);
++
++	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
++	if (ret)
++		goto err_pm;
++
++	pm_runtime_idle(dev);
++	return 0;
++
++err_pm:
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	v4l2_subdev_cleanup(&sensor->sd);
++err_entity:
++	media_entity_cleanup(&sensor->sd.entity);
++err_ctrls:
++	v4l2_ctrl_handler_free(&sensor->ctrls);
++err_power:
++	sr259_power_off(dev);
++	return ret;
++}
++
++static void sr259_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct sr259 *sensor = to_sr259(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	v4l2_subdev_cleanup(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(&sensor->ctrls);
++	pm_runtime_disable(sensor->dev);
++	if (!pm_runtime_status_suspended(sensor->dev)) {
++		sr259_power_off(sensor->dev);
++		pm_runtime_set_suspended(sensor->dev);
++	}
++}
++
++static DEFINE_RUNTIME_DEV_PM_OPS(sr259_pm_ops, sr259_power_off,
++				 sr259_power_on, NULL);
++
++static const struct of_device_id sr259_of_match[] = {
++	{ .compatible = "hynix,sr259" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sr259_of_match);
++
++static struct i2c_driver sr259_driver = {
++	.driver = {
++		.name = "sr259",
++		.pm = pm_ptr(&sr259_pm_ops),
++		.of_match_table = sr259_of_match,
++	},
++	.probe = sr259_probe,
++	.remove = sr259_remove,
++};
++module_i2c_driver(sr259_driver);
++
++MODULE_DESCRIPTION("SK hynix SR259 image sensor driver");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

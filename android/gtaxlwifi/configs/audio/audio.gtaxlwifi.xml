@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<audiohal>
+    <mixer name="gtaxlwifi">
+        <init>
+            <ctl name="DAC1 Playback Volume" val="175"/>
+            <ctl name="DAC1 Playback Switch" val="1"/>
+            <ctl name="DAC L1 Mux" val="IF1 DAC1"/>
+            <ctl name="DAC R1 Mux" val="IF1 DAC1"/>
+            <ctl name="DAC1 MIXL DAC1 Switch" val="1"/>
+            <ctl name="DAC1 MIXR DAC1 Switch" val="1"/>
+            <ctl name="Stereo DAC MIXL DAC L1 Switch" val="1"/>
+            <ctl name="Stereo DAC MIXR DAC R1 Switch" val="1"/>
+            <ctl name="DAC L2 Source" val="Stereo DAC Mixer"/>
+            <ctl name="DAC R2 Source" val="Stereo DAC Mixer"/>
+            <ctl name="SPK MIXL DAC L2 Switch" val="1"/>
+            <ctl name="SPK MIXR DAC R2 Switch" val="1"/>
+            <ctl name="SPKVOL L Switch" val="1"/>
+            <ctl name="SPKVOL R Switch" val="1"/>
+            <ctl name="SPO L MIX SPKVOL L Switch" val="1"/>
+            <ctl name="SPO R MIX SPKVOL R Switch" val="1"/>
+            <ctl name="SPO Playback Switch" val="1"/>
+            <ctl name="HPO L Playback Switch" val="1"/>
+            <ctl name="HPO R Playback Switch" val="1"/>
+            <ctl name="Speaker Playback Volume" val="31"/>
+            <ctl name="Headphone Playback Volume" val="31"/>
+        </init>
+    </mixer>
+    <device name="speaker">
+        <path name="on">
+            <ctl name="SPK Switch" val="1"/>
+        </path>
+        <path name="off">
+            <ctl name="SPK Switch" val="0"/>
+        </path>
+    </device>
+    <device name="headphone">
+        <path name="on">
+            <ctl name="HP Switch" val="1"/>
+        </path>
+        <path name="off">
+            <ctl name="HP Switch" val="0"/>
+        </path>
+    </device>
+    <device name="headset">
+        <path name="on">
+            <ctl name="HP Switch" val="1"/>
+        </path>
+        <path name="off">
+            <ctl name="HP Switch" val="0"/>
+        </path>
+    </device>
+    <!-- internal microphone: differential IN3, path and gains from
+         dev-main-mic / gain-media-mic of the vendor mixer_paths.xml (§60) -->
+    <device name="mic">
+        <path name="on">
+            <ctl name="Stereo1 ADC Source" val="ADC1"/>
+            <ctl name="Stereo1 ADC1 Source" val="ADC"/>
+            <ctl name="IN3 Boost Volume" val="53"/>
+            <ctl name="RECMIX1L BST3 Switch" val="1"/>
+            <ctl name="RECMIX1R BST3 Switch" val="1"/>
+            <ctl name="Stereo1 ADC MIXL ADC1 Switch" val="1"/>
+            <ctl name="Stereo1 ADC MIXR ADC1 Switch" val="1"/>
+            <ctl name="Main Mic Switch" val="1"/>
+        </path>
+        <path name="off">
+            <ctl name="Main Mic Switch" val="0"/>
+            <ctl name="Stereo1 ADC MIXL ADC1 Switch" val="0"/>
+            <ctl name="Stereo1 ADC MIXR ADC1 Switch" val="0"/>
+            <ctl name="RECMIX1L BST3 Switch" val="0"/>
+            <ctl name="RECMIX1R BST3 Switch" val="0"/>
+        </path>
+    </device>
+    <!-- 240 x 4 = 20 ms, for the FastMixer (§68.16); 480 x 8 was the
+         DEEP_BUFFER of §27.3. -->
+    <stream type="pcm" dir="out" card="0" device="0" rate="48000" period_size="240" period_count="4">
+        <enable path="on"/>
+        <disable path="off"/>
+    </stream>
+    <stream type="pcm" dir="in" card="0" device="0" rate="48000">
+        <enable path="on"/>
+        <disable path="off"/>
+    </stream>
+</audiohal>

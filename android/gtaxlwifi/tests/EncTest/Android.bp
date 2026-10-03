@@ -1,0 +1,25 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// Video encoder test (§58.11): encodes synthetic frames with MediaCodec
+// (codec chosen by type or by name) and writes an MP4, for the codecs that
+// screenrecord cannot use (HEVC, VP8, MPEG-4, H.263). Not part of any image:
+// build it with `m gtaxl-enctest` (it is not in PRODUCT_PACKAGES) and copy
+// it to /data/local/tmp.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "gtaxl-enctest",
+    srcs: ["enctest.cpp"],
+    shared_libs: [
+        "libbinder_ndk",
+        "libmediandk",
+        "liblog",
+        "libnativewindow",
+    ],
+    cflags: ["-Wall", "-Werror"],
+}

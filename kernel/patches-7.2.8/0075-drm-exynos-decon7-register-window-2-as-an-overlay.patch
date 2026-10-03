@@ -1,0 +1,45 @@
+From 782d1d2ca5902502ea7176efdb9fd652911b51c2 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 6 Sep 2026 16:00:00 +0200
+Subject: [PATCH] drm/exynos: decon7: register window 2 as an overlay
+
+Window 2 is a full-size window with its own DMA channel, exactly like
+window 1; nothing in the block makes it a cursor. Registering it as a
+cursor plane hides it from compositors that only assign ordinary layers
+to overlay planes: drm_hwcomposer's GetUsablePlanes() counts primary and
+overlay planes only, so on Android the third window was never used.
+
+Make it an overlay. The DECON blends windows in a fixed order, so the
+immutable zpos == window index already set by decon_bind() still holds.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index defda17902..7e682340f1 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -105,10 +105,17 @@ static const uint32_t decon_formats[] = {
+ 	DRM_FORMAT_BGRA8888,
+ };
+ 
++/*
++ * All three windows are full-size and have their own DMA channel; none
++ * of them is a hardware cursor. Registering window 2 as an overlay lets
++ * compositors that only count overlay planes (drm_hwcomposer's
++ * GetUsablePlanes(), KWin) use it for ordinary layers instead of a
++ * 36x36 cursor that Android never has.
++ */
+ static const enum drm_plane_type decon_win_types[WINDOWS_NR] = {
+ 	DRM_PLANE_TYPE_PRIMARY,
+ 	DRM_PLANE_TYPE_OVERLAY,
+-	DRM_PLANE_TYPE_CURSOR,
++	DRM_PLANE_TYPE_OVERLAY,
+ };
+ 
+ /**
+-- 
+2.47.3
+

@@ -1,0 +1,8 @@
+# Our thermal HAL (hal/thermal, §76), in AOSP's domain for the vendor
+# thermal HAL. The rules are the ones Linaro's HAL had
+# (hardware/linaro/libpm/sepolicy/thermal and its optional in the generic
+# device): the kernel's thermal netlink, and the Power HAL (perfmgr) reading
+# the temperatures.
+allow hal_thermal_default self:netlink_generic_socket { bind create getattr read setopt write };
+binder_call(hal_power_default, hal_thermal_default)
+hal_client_domain(hal_power_default, hal_thermal)

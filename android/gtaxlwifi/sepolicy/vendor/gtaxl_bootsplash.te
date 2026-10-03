@@ -1,0 +1,38 @@
+# The splash shown again when leaving charging mode (§43.11).
+#
+# The first-stage one needs no policy: it is started by generic_init before
+# the policy is loaded and after the modeset it makes no more calls that
+# need authorising (§43.3). This one instead runs with the system up, so it
+# needs its own domain.
+type gtaxl_bootsplash, domain;
+type gtaxl_bootsplash_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(gtaxl_bootsplash)
+
+# The DRM node. The directory matters as much as the nodes: without search,
+# the open does not even get to ask for permission on the node — the same
+# lesson as the charger in §42.9, where exactly this was missing and minui
+# failed.
+allow gtaxl_bootsplash gpu_device:dir r_dir_perms;
+allow gtaxl_bootsplash gpu_device:chr_file rw_file_perms;
+
+# Here the /dev/dri node already exists, so the sysfs path — the one used in
+# first stage to create the node by itself — is never taken. Measured:
+# trying the reverse order produced two denials, `search` on **sysfs_gpu**
+# (not `sysfs`: DRM has its own type) and the mknod's `sys_admin`
+# capability. The fix is not to grant those two permissions but to not ask
+# for them: the binary tries /dev/dri first.
+
+# Diagnostics on /dev/kmsg, like the project's other components.
+allow gtaxl_bootsplash kmsg_device:chr_file w_file_perms;
+
+# When the DRM node is opened the kernel does `file->authenticated =
+# capable(CAP_SYS_ADMIN)` (drm_file.c:149): it is a **question**, not a
+# permission we need — the modeset succeeds anyway, measured. SELinux logs
+# it as a denial, and it is silenced the way the platform does for the same
+# case: `private/kernel.te:187` has `dontaudit kernel self:capability {
+# sys_admin setgid mknod }`, and that is why the first-stage splash — which
+# runs precisely in the kernel domain — leaves no trace.
+#
+# `dontaudit` and not `allow`: we do not really want the capability.
+dontaudit gtaxl_bootsplash self:capability sys_admin;

@@ -1,0 +1,85 @@
+From cab89aee8800a34396f7c39bcbcc90b03971945b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:53 +0000
+Subject: [PATCH] ASoC: samsung: i2s: don't route a non-existent secondary
+ stream
+
+samsung_i2s_dapm_routes unconditionally connects "Playback Mixer" to
+"Secondary Playback", but that stream only exists when the variant has
+QUIRK_SEC_DAI: i2s_alloc_dais() registers a single DAI otherwise.  On
+such variants - samsung,exynos7-i2s1 among them - any card using the
+controller fails to instantiate:
+
+  samsung-i2s 148a0000.i2s: ASoC: Failed to add route
+      Secondary Playback(*) -> Playback Mixer
+  asoc-simple-card sound-test: ASoC: failed to instantiate card -19
+
+Add a route set without the secondary link and a matching component
+driver, and pick between the two according to the quirk.  Variants
+with a secondary FIFO are unaffected.
+
+Found on gtaxlwifi (Exynos 7870, i2s0 as samsung,exynos7-i2s1) with a
+simple-audio-card.
+---
+ sound/soc/samsung/i2s.c | 31 ++++++++++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/samsung/i2s.c b/sound/soc/samsung/i2s.c
+index f80e8d4981..ed7afe175d 100644
+--- a/sound/soc/samsung/i2s.c
++++ b/sound/soc/samsung/i2s.c
+@@ -1122,6 +1122,18 @@ static const struct snd_soc_dapm_route samsung_i2s_dapm_routes[] = {
+ 	{ "Primary Capture", NULL, "Mixer DAI RX" },
+ };
+ 
++/*
++ * Variants without QUIRK_SEC_DAI register a single DAI and therefore
++ * have no "Secondary Playback" stream; referencing it would make card
++ * instantiation fail with -ENODEV.
++ */
++static const struct snd_soc_dapm_route samsung_i2s_pri_dapm_routes[] = {
++	{ "Playback Mixer", NULL, "Primary Playback" },
++
++	{ "Mixer DAI TX", NULL, "Playback Mixer" },
++	{ "Primary Capture", NULL, "Mixer DAI RX" },
++};
++
+ static const struct snd_soc_component_driver samsung_i2s_component = {
+ 	.name = "samsung-i2s",
+ 
+@@ -1137,6 +1149,21 @@ static const struct snd_soc_component_driver samsung_i2s_component = {
+ 	.legacy_dai_naming = 1,
+ };
+ 
++static const struct snd_soc_component_driver samsung_i2s_pri_component = {
++	.name = "samsung-i2s",
++
++	.dapm_widgets = samsung_i2s_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(samsung_i2s_widgets),
++
++	.dapm_routes = samsung_i2s_pri_dapm_routes,
++	.num_dapm_routes = ARRAY_SIZE(samsung_i2s_pri_dapm_routes),
++
++	.suspend = i2s_suspend,
++	.resume = i2s_resume,
++
++	.legacy_dai_naming = 1,
++};
++
+ #define SAMSUNG_I2S_FMTS (SNDRV_PCM_FMTBIT_S8 | SNDRV_PCM_FMTBIT_S16_LE | \
+ 			  SNDRV_PCM_FMTBIT_S24_LE)
+ 
+@@ -1505,7 +1532,9 @@ static int samsung_i2s_probe(struct platform_device *pdev)
+ 	dev_set_drvdata(&pdev->dev, priv);
+ 
+ 	ret = devm_snd_soc_register_component(&pdev->dev,
+-					&samsung_i2s_component,
++					priv->quirks & QUIRK_SEC_DAI ?
++					&samsung_i2s_component :
++					&samsung_i2s_pri_component,
+ 					priv->dai_drv, num_dais);
+ 	if (ret < 0)
+ 		goto err_del_sec;
+-- 
+2.47.3
+

@@ -1,0 +1,159 @@
+From eff94833337a8c0fdafe953596d58316ace432dc Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:51 +0000
+Subject: [PATCH] clk: samsung: exynos7870: full ECT PLL rate table and DVFS
+ levels
+
+Fill cpucl_pll_rates[] with all 17 P/M/S tuples decoded from the ECT PLL
+block (domains CPUCL0_PLL/CPUCL1_PLL, byte-identical). Cross-checks: the
+902.2 MHz tuple matches the value read back from the silicon, and the
+2002/1586 MHz tuples match the Exynos850 mainline table for the same
+frequencies. True rates, not marketing ones (838.5/756.6/448.5/342.875).
+
+Extend the clk-cpu cfg data to the 13 levels usable on this unit
+(1586000 down to 342875 kHz): 2002/1924 are disabled in the ECT DVFS
+block, 1794/1690 have en=0 in the fused ASV table 5. The pre-rate
+handler's sanity check makes this table the hard gate (-EINVAL) against
+the forbidden levels.
+
+Divider verdict amended with ECT ground truth: RUN_MONITOR is div 4 on
+ALL 17 levels (level-independent, better than assumed); the one
+level-dependent divider is HPM (5/4/3 across the scale), deliberately
+left at its boot value (4): worst case 1586/4 = 396.5 MHz is below the
+400.4 MHz (2002/5) the vendor itself feeds the unused HPM sensor.
+
+No DT changes: cpufreq still sees the single 902.2 MHz OPP. This patch
+alone enables the manual relock test via debugfs (0072) at and below
+902.2 MHz, where the boot voltage (762500 uV) covers every level's ASV
+requirement on this unit.
+---
+ drivers/clk/samsung/clk-cpu.c        |  6 ++-
+ drivers/clk/samsung/clk-exynos7870.c | 75 ++++++++++++++++++++++------
+ 2 files changed, 64 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/clk/samsung/clk-cpu.c b/drivers/clk/samsung/clk-cpu.c
+index ce0be7eec5..3f9eb383ca 100644
+--- a/drivers/clk/samsung/clk-cpu.c
++++ b/drivers/clk/samsung/clk-cpu.c
+@@ -657,8 +657,10 @@ static int exynos7870_cpuclk_pre_rate_change(struct clk_notifier_data *ndata,
+ 
+ 	/*
+ 	 * Sanity check: the target rate must be listed in the configuration
+-	 * data. The divider fields are unused on this SoC: all CMU_CPUCLx
+-	 * dividers are level-independent (ECT DVFS block, silicon-verified).
++	 * data. The divider fields are unused on this SoC: no divider on the
++	 * CPU path is level-dependent, and the one level-dependent divider in
++	 * the ECT (HPM, an unused sensor) is deliberately left at its boot
++	 * value - see the divider comment in clk-exynos7870.c.
+ 	 */
+ 	while ((cfg_data->prate * 1000) != ndata->new_rate) {
+ 		if (cfg_data->prate == 0)
+diff --git a/drivers/clk/samsung/clk-exynos7870.c b/drivers/clk/samsung/clk-exynos7870.c
+index 0df92fb96e..a31d379735 100644
+--- a/drivers/clk/samsung/clk-exynos7870.c
++++ b/drivers/clk/samsung/clk-exynos7870.c
+@@ -799,16 +799,38 @@ static const unsigned long cpucl0_clk_regs[] __initconst = {
+ };
+ 
+ /*
+- * P/M/S tuples come from the PLL block of the ECT at 0x90000000 (domain
+- * CPUCL0_PLL/CPUCL1_PLL, type 1417x, 17 tuples from 2002 MHz down to
+- * 342.875 MHz). Only the 902.2 MHz tuple below is silicon-verified so far
+- * (boot value programmed by S-BOOT, register dump on kernel #41):
+- * CON0 = 0xa15b0501 -> M=347 P=5 S=1 -> 26 MHz * 347 / (5 * 2^1) = 902.2 MHz.
+- * TODO: fill in the remaining 16 tuples from ect-decode before enabling
+- * any OPP other than 902.2 MHz.
++ * P/M/S tuples from the PLL block of the ECT at 0x90000000 (domains
++ * CPUCL0_PLL/CPUCL1_PLL, type 1417x, byte-identical for both clusters).
++ * Cross-checks: the 902.2 MHz tuple matches the S-BOOT programmed value
++ * read back from the silicon (CON0 = 0xa15b0501 -> M=347 P=5 S=1), and
++ * the 2002/1586 MHz tuples match the Exynos850 mainline cpu_pll_rates
++ * for the same frequencies (231/3/0 and 183/3/0) - same PLL vendor
++ * arithmetic. Rates are the true ECT values, not the marketing ones
++ * (838.5, 756.6, 448.5, 342.875 MHz).
++ *
++ * All 17 tuples are listed as hardware truth; which of them are actually
++ * reachable is policed by the clk-cpu cfg data and by the OPP tables:
++ * 2002/1924 are disabled in the ECT DVFS block, and 1794/1690 have no
++ * voltage for this unit's fused ASV table (table 5, en=0).
+  */
+ static const struct samsung_pll_rate_table cpucl_pll_rates[] __initconst = {
++	PLL_35XX_RATE(26 * MHZ, 2002000000U, 231, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1924000000U, 222, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1794000000U, 207, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1690000000U, 195, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1586000000U, 183, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1482000000U, 171, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1352000000U, 156, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1248000000U, 144, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1144000000U, 132, 3, 0),
++	PLL_35XX_RATE(26 * MHZ, 1014000000U, 117, 3, 0),
+ 	PLL_35XX_RATE(26 * MHZ, 902200000U, 347, 5, 1),
++	PLL_35XX_RATE(26 * MHZ, 838500000U, 258, 4, 1),
++	PLL_35XX_RATE(26 * MHZ, 756600000U, 291, 5, 1),
++	PLL_35XX_RATE(26 * MHZ, 676000000U, 156, 3, 1),
++	PLL_35XX_RATE(26 * MHZ, 546000000U, 126, 3, 1),
++	PLL_35XX_RATE(26 * MHZ, 448500000U, 207, 3, 2),
++	PLL_35XX_RATE(26 * MHZ, 342875000U, 211, 4, 2),
+ };
+ 
+ static const struct samsung_pll_clock cpucl0_pll_clks[] __initconst = {
+@@ -838,11 +860,16 @@ static const struct samsung_mux_clock cpucl0_mux_clks[] __initconst = {
+ };
+ 
+ /*
+- * All CMU_CPUCL0 dividers are level-independent per the ECT DVFS block
+- * (verified against the S-BOOT programmed values on kernel #41: DIV_1=1,
+- * DIV_2=1, ACLK=2, PCLK/ATCLK/PCLKDBG=8, CNTCLK=4, RUN_MONITOR=4, HPM=4,
+- * DIV "PLL"=2 - the latter is off the CPU path, cores run at full mux
+- * rate). They are modelled read-only and never reprogrammed.
++ * All CMU_CPUCL0 dividers on the CPU/debug path are level-independent
++ * per the ECT DVFS block (ACLK=2, PCLK/ATCLK/PCLKDBG=8, CNTCLK=4,
++ * RUN_MONITOR=4, DIV "PLL"=2 - the latter is off the CPU path, cores
++ * run at full mux rate; all verified against the S-BOOT programmed
++ * values). The one exception is HPM, which the vendor DFS reprograms
++ * per level (div 5/4/3 from top to bottom of the scale). It is left at
++ * its boot value (div 4) instead: worst case 1586/4 = 396.5 MHz, still
++ * below the 2002/5 = 400.4 MHz the vendor itself feeds the HPM sensor
++ * at the top level, and the sensor is unused in mainline anyway.
++ * Everything is modelled read-only and never reprogrammed.
+  */
+ static const struct samsung_div_clock cpucl0_div_clks[] __initconst = {
+ 	DIV_F(CLK_DOUT_CPUCL0_1, "dout_cpucl0_1", "gout_cpucl0_mux",
+@@ -899,12 +926,30 @@ static const struct samsung_gate_clock cpucl0_gate_clks[] __initconst = {
+ 
+ 
+ /*
+- * prate values (kHz) must match the PLL rate table above. div0/div1 are
+- * unused by the Exynos7870 clk-cpu layout: all CMU_CPUCLx dividers are
+- * level-independent.
++ * prate values (kHz) must match the PLL rate table above; div0/div1 are
++ * unused by the Exynos7870 clk-cpu layout (no divider programming, see
++ * the divider comment above the cpucl0_div_clks table).
++ *
++ * These are the 13 levels usable on this unit: the ECT DVFS block
++ * disables 2002/1924 outright, and 1794/1690 have en=0 in the fused ASV
++ * table (table 5), i.e. no valid voltage. The clk-cpu pre-rate handler
++ * rejects any rate not listed here (-EINVAL), so this table is the
++ * hard gate against the forbidden levels.
+  */
+ static const struct exynos_cpuclk_cfg_data exynos7870_cluster_clk_d[] __initconst = {
++	{ 1586000, 0, 0 },
++	{ 1482000, 0, 0 },
++	{ 1352000, 0, 0 },
++	{ 1248000, 0, 0 },
++	{ 1144000, 0, 0 },
++	{ 1014000, 0, 0 },
+ 	{ 902200, 0, 0 },
++	{ 838500, 0, 0 },
++	{ 756600, 0, 0 },
++	{ 676000, 0, 0 },
++	{ 546000, 0, 0 },
++	{ 448500, 0, 0 },
++	{ 342875, 0, 0 },
+ 	{ 0 }
+ };
+ 
+-- 
+2.47.3
+

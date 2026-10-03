@@ -1,0 +1,107 @@
+From 71c9cbba1eeb66584b635ac38e63efc41fc09cbf Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Tue, 29 Sep 2026 17:40:38 +0200
+Subject: [PATCH] arm64: dts: exynos7870: add the core power-down idle state
+
+The vendor device tree declares one PSCI idle state per core, power-down
+(0x10000), 35 us entry, 90 us exit, 750 us minimum residency; the
+latencies are taken from there. The vendor kernel runs the per-cpu tick
+on the MCT, which stays powered; here the per-cpu tick is the arch
+timer, which is lost with the core, hence local-timer-stop.
+
+Needs the PMU preparation in exynos-pmu, without which the firmware
+never returns from the state.
+
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 26 ++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index 9c2debfc1f..764a8c62b2 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -68,6 +68,7 @@ cpu0: cpu@0 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x0>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 			clocks = <&cmu_cpucl0 CLK_CLUSTER0_SCLK>;
+ 			clock-names = "cluster0_clk";
+ 			#cooling-cells = <2>;
+@@ -78,6 +79,7 @@ cpu1: cpu@1 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x1>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 		};
+ 
+ 		cpu2: cpu@2 {
+@@ -85,6 +87,7 @@ cpu2: cpu@2 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x2>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 		};
+ 
+ 		cpu3: cpu@3 {
+@@ -92,6 +95,7 @@ cpu3: cpu@3 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x3>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 		};
+ 
+ 		cpu4: cpu@100 {
+@@ -99,6 +103,7 @@ cpu4: cpu@100 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x100>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 			clocks = <&cmu_cpucl1 CLK_CLUSTER1_SCLK>;
+ 			clock-names = "cluster1_clk";
+ 			#cooling-cells = <2>;
+@@ -109,6 +114,7 @@ cpu5: cpu@101 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x101>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 		};
+ 
+ 		cpu6: cpu@102 {
+@@ -116,6 +122,7 @@ cpu6: cpu@102 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x102>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
+ 		};
+ 
+ 		cpu7: cpu@103 {
+@@ -123,6 +130,25 @@ cpu7: cpu@103 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x103>;
+ 			enable-method = "psci";
++			cpu-idle-states = <&cpu_sleep>;
++		};
++
++		idle-states {
++			entry-method = "psci";
++
++			/*
++			 * Core power-down. The firmware needs the PMU prepared
++			 * by the kernel (exynos-pmu), and the arch timer is
++			 * lost with the core.
++			 */
++			cpu_sleep: cpu-sleep {
++				compatible = "arm,idle-state";
++				arm,psci-suspend-param = <0x10000>;
++				local-timer-stop;
++				entry-latency-us = <35>;
++				exit-latency-us = <90>;
++				min-residency-us = <750>;
++			};
+ 		};
+ 	};
+ 
+-- 
+2.47.3
+

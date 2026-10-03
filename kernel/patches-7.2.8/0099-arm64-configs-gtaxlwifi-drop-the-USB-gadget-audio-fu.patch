@@ -1,0 +1,26 @@
+From 569d88f7e9ad06bea6e431f1795af17cb3774276 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 30 Aug 2026 17:53:07 +0000
+Subject: [PATCH] arm64: configs: gtaxlwifi: drop the USB gadget audio
+ functions
+
+---
+ arch/arm64/configs/gtaxlwifi_defconfig | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/arch/arm64/configs/gtaxlwifi_defconfig b/arch/arm64/configs/gtaxlwifi_defconfig
+index fe398a6dd9..c2d31aeffa 100644
+--- a/arch/arm64/configs/gtaxlwifi_defconfig
++++ b/arch/arm64/configs/gtaxlwifi_defconfig
+@@ -6643,8 +6643,6 @@ CONFIG_USB_CONFIGFS_ECM=y
+ CONFIG_USB_CONFIGFS_EEM=y
+ CONFIG_USB_CONFIGFS_F_FS=y
+ CONFIG_USB_CONFIGFS_F_HID=y
+-CONFIG_USB_CONFIGFS_F_MIDI=y
+-CONFIG_USB_CONFIGFS_F_UAC2=y
+ CONFIG_USB_CONFIGFS_F_UVC=y
+ CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+ CONFIG_USB_CONFIGFS_NCM=y
+-- 
+2.47.3
+

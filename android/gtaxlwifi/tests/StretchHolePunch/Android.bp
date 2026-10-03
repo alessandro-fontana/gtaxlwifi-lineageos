@@ -1,0 +1,21 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// Test scene for §45.8: a SurfaceView INSIDE a scrolling container, i.e. the
+// only case the layerless-stretch patch could break (the hole punch in
+// RenderNodeDrawable.cpp:305). Not part of any image: build it with
+// `m StretchHolePunch` and install it with adb.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_app {
+    name: "StretchHolePunch",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    optimize: { enabled: false },
+    dex_preopt: { enabled: false },
+}

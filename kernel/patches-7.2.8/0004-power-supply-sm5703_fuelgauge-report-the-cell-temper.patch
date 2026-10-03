@@ -1,0 +1,213 @@
+From 11afbd23db40d768596e46027431765bdba54fb5 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 13 Aug 2026 17:39:53 +0000
+Subject: [PATCH] power: supply: sm5703_fuelgauge: report the cell temperature
+
+The chip measures the temperature of its own die, and the driver hands
+that to userspace as the battery temperature.  The die sits next to the
+charging path and reads around twenty degrees above the pack, so a
+battery at 30 degrees is reported at 50.
+
+The pack thermistor is not part of this chip.  Where it is wired to
+something else, as on the boards this gauge appears on, it reaches us as
+a thermal zone, so take the temperature from there and keep the die
+reading for the current gain compensation it is measured for.  A board
+with no thermistor now reports no temperature, which is what it knows.
+
+With a real cell temperature, health can say something: judge it against
+the operating range of the monitored battery.  There is no health
+register on this gauge, so without a battery description, or without a
+thermistor, the answer stays unknown rather than becoming a guess.
+---
+ .../supply/siliconmitus,sm5703-fuelgauge.yaml | 10 +-
+ drivers/power/supply/sm5703_fuelgauge.c       | 96 ++++++++++++++++++-
+ 2 files changed, 100 insertions(+), 6 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5703-fuelgauge.yaml b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5703-fuelgauge.yaml
+index ab8e67888f..c412f09614 100644
+--- a/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5703-fuelgauge.yaml
++++ b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5703-fuelgauge.yaml
+@@ -14,6 +14,11 @@ description: |
+   I2C address, usually on a different bus than the rest of the chip, and
+   is independent from it.
+ 
++  The chip measures the temperature of its own die, not of the cell.
++  Where the pack thermistor is wired to something else, as it usually is,
++  a thermal zone named "battery-thermal" is what the driver reports as
++  the battery temperature.
++
+   The gauge tracks the state of charge by following the cell voltage, so
+   it needs a set of cell specific calibration tables.  Those are not
+   discoverable and have to be supplied here; they are normally lifted
+@@ -33,7 +38,10 @@ properties:
+     maxItems: 1
+     description: Alert interrupt, asserted on low charge or low voltage.
+ 
+-  monitored-battery: true
++  monitored-battery:
++    description:
++      The battery being monitored.  Its operating-range-celsius, if
++      given, is what the reported health is judged against.
+ 
+   siliconmitus,battery-table-discharge:
+     $ref: /schemas/types.yaml#/definitions/uint32-array
+diff --git a/drivers/power/supply/sm5703_fuelgauge.c b/drivers/power/supply/sm5703_fuelgauge.c
+index ffe6f52e2b..3403ebc5f2 100644
+--- a/drivers/power/supply/sm5703_fuelgauge.c
++++ b/drivers/power/supply/sm5703_fuelgauge.c
+@@ -29,6 +29,7 @@
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+ #include <linux/regmap.h>
++#include <linux/thermal.h>
+ 
+ #define SM5703_FG_REG_DEVICE_ID		0x00
+ #define SM5703_FG_REG_CNTL		0x01
+@@ -151,6 +152,7 @@ struct sm5703_fg {
+ 	struct regmap *regmap;
+ 	struct power_supply *psy;
+ 	struct power_supply_battery_info *info;
++	struct thermal_zone_device *tz;
+ 	struct mutex lock;	/* serialises register sequences and cache */
+ 	struct sm5703_fg_params params;
+ 
+@@ -300,11 +302,12 @@ static int sm5703_fg_get_current_avg(struct sm5703_fg *fg, int *curr)
+ }
+ 
+ /*
+- * Temperature measured by the gauge itself, not by the pack thermistor.
+- * On this family the thermistor hangs off the SoC ADC and is read by a
+- * separate driver.
++ * Temperature of the gauge's own die.  This is not the temperature of
++ * the cell: the die sits next to the charging path and reads well above
++ * the pack, by around twenty degrees on this tablet.  It is used for the
++ * current gain compensation, which is what the chip measures it for.
+  */
+-static int sm5703_fg_get_temp(struct sm5703_fg *fg, int *temp)
++static int sm5703_fg_get_die_temp(struct sm5703_fg *fg, int *temp)
+ {
+ 	u16 raw;
+ 	int ret;
+@@ -322,6 +325,42 @@ static int sm5703_fg_get_temp(struct sm5703_fg *fg, int *temp)
+ 	return 0;
+ }
+ 
++/*
++ * Temperature of the cell, from the pack thermistor.  It hangs off the
++ * SoC ADC rather than off this chip, so it reaches us as a thermal zone.
++ * Without one there is nothing honest to report: the die temperature is
++ * not a stand-in, and handing it to userspace as the battery
++ * temperature is how a pack at 30 degrees gets shown as 50.
++ */
++static int sm5703_fg_get_temp(struct sm5703_fg *fg, int *temp)
++{
++	int ret, millicelsius;
++
++	/*
++	 * Looked up on first use rather than at probe: the thermal zone
++	 * may well register after this driver, and deferring the probe to
++	 * wait for one would hang a board that simply has no thermistor.
++	 */
++	if (!fg->tz) {
++		fg->tz = thermal_zone_get_zone_by_name("battery-thermal");
++		if (IS_ERR(fg->tz)) {
++			fg->tz = NULL;
++			return -ENODATA;
++		}
++	}
++
++	ret = thermal_zone_get_temp(fg->tz, &millicelsius);
++	if (ret)
++		return ret;
++
++	/* The thermal framework works in millidegrees, power supply in
++	 * tenths of a degree.
++	 */
++	*temp = millicelsius / 100;
++
++	return 0;
++}
++
+ /*
+  * Average a run of initial OCV samples, dropping the highest and the
+  * lowest one, and report how far apart the extremes were.
+@@ -647,7 +686,7 @@ static int sm5703_fg_get_soc_raw(struct sm5703_fg *fg, int *soc)
+ 	if (!ret)
+ 		ret = sm5703_fg_get_ocv(fg, &dummy);
+ 	if (!ret)
+-		ret = sm5703_fg_get_temp(fg, &dummy);
++		ret = sm5703_fg_get_die_temp(fg, &dummy);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -832,6 +871,49 @@ static int sm5703_fg_get_status(struct sm5703_fg *fg, int *status)
+ 	return 0;
+ }
+ 
++/*
++ * There is no health register on this gauge: its status register carries
++ * only the alert flags.  What can be said comes from comparing the cell
++ * against the limits the battery node declares, so a board without a
++ * monitored-battery, or without a thermistor, gets an honest unknown
++ * rather than a guess.
++ */
++static int sm5703_fg_get_health(struct sm5703_fg *fg, int *health)
++{
++	int ret, voltage, temp;
++
++	*health = POWER_SUPPLY_HEALTH_UNKNOWN;
++
++	if (!fg->info)
++		return 0;
++
++	ret = sm5703_fg_get_voltage(fg, &voltage);
++	if (ret)
++		return ret;
++
++	if (fg->info->voltage_max_design_uv > 0 &&
++	    voltage * 1000 > fg->info->voltage_max_design_uv) {
++		*health = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
++		return 0;
++	}
++
++	ret = sm5703_fg_get_temp(fg, &temp);
++	if (ret == -ENODATA)
++		return 0;
++	if (ret)
++		return ret;
++
++	/* power_supply_battery_info keeps these in whole degrees. */
++	if (fg->info->temp_max != INT_MAX && temp / 10 > fg->info->temp_max)
++		*health = POWER_SUPPLY_HEALTH_OVERHEAT;
++	else if (fg->info->temp_min != INT_MIN && temp / 10 < fg->info->temp_min)
++		*health = POWER_SUPPLY_HEALTH_COLD;
++	else
++		*health = POWER_SUPPLY_HEALTH_GOOD;
++
++	return 0;
++}
++
+ static int sm5703_fg_get_property(struct power_supply *psy,
+ 				  enum power_supply_property psp,
+ 				  union power_supply_propval *val)
+@@ -881,6 +963,9 @@ static int sm5703_fg_get_property(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_TEMP:
+ 		ret = sm5703_fg_get_temp(fg, &val->intval);
+ 		break;
++	case POWER_SUPPLY_PROP_HEALTH:
++		ret = sm5703_fg_get_health(fg, &val->intval);
++		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+ 		if (!fg->info || fg->info->charge_full_design_uah < 0) {
+ 			ret = -ENODATA;
+@@ -963,6 +1048,7 @@ static enum power_supply_property sm5703_fg_props[] = {
+ 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+ 	POWER_SUPPLY_PROP_CHARGE_NOW,
+ 	POWER_SUPPLY_PROP_TEMP,
++	POWER_SUPPLY_PROP_HEALTH,
+ };
+ 
+ static const struct power_supply_desc sm5703_fg_desc = {
+-- 
+2.47.3
+

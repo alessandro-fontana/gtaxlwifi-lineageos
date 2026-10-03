@@ -1,0 +1,84 @@
+From 421d4ecbf4804920bb5b6b330277e10ed792fbae Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 2 Oct 2026 15:50:38 +0200
+Subject: [PATCH 190/191] power: supply: sm5703-charger: charging_enabled
+ boolean attribute
+
+The charging enable state is charge_behaviour, which reads as
+"[auto] inhibit-charge" like every enumerated power_supply attribute.
+Android's charging control HALs, LineageOS's vendor.lineage.health among
+them, toggle and read a plain boolean node instead, and cannot make sense
+of the bracketed list.
+
+Add charging_enabled, "1" or "0", on the same state: writing it sets
+charge_behaviour to auto or inhibit-charge, and either attribute reads
+what the other wrote.
+
+---
+ drivers/power/supply/sm5703-charger.c | 43 +++++++++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/drivers/power/supply/sm5703-charger.c b/drivers/power/supply/sm5703-charger.c
+index aa2047d9c0..f50f3d2a4c 100644
+--- a/drivers/power/supply/sm5703-charger.c
++++ b/drivers/power/supply/sm5703-charger.c
+@@ -657,6 +657,48 @@ static const struct power_supply_desc sm5703_charger_desc = {
+ 	.property_is_writeable	= sm5703_charger_property_is_writeable,
+ };
+ 
++/*
++ * charging_enabled: the same state as charge_behaviour, as "1" or "0". The
++ * standard attribute lists every behaviour and brackets the current one;
++ * Android's charging control HALs (LineageOS's vendor.lineage.health among
++ * them) toggle and read a plain boolean node instead.
++ */
++static ssize_t charging_enabled_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct sm5703_charger *chg = power_supply_get_drvdata(dev_to_psy(dev));
++
++	guard(mutex)(&chg->lock);
++	return sysfs_emit(buf, "%d\n",
++			  chg->behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO);
++}
++
++static ssize_t charging_enabled_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	struct sm5703_charger *chg = power_supply_get_drvdata(dev_to_psy(dev));
++	bool enable;
++	int ret;
++
++	ret = kstrtobool(buf, &enable);
++	if (ret)
++		return ret;
++
++	guard(mutex)(&chg->lock);
++	chg->behaviour = enable ? POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO :
++				  POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
++	ret = sm5703_charger_apply_enable(chg);
++	return ret ?: count;
++}
++static DEVICE_ATTR_RW(charging_enabled);
++
++static struct attribute *sm5703_charger_attrs[] = {
++	&dev_attr_charging_enabled.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(sm5703_charger);
++
+ static void sm5703_charger_extcon_work(struct work_struct *work)
+ {
+ 	struct sm5703_charger *chg = container_of(work, struct sm5703_charger,
+@@ -808,6 +850,7 @@ static int sm5703_charger_probe(struct platform_device *pdev)
+ 
+ 	cfg.drv_data = chg;
+ 	cfg.fwnode = dev_fwnode(dev);
++	cfg.attr_grp = sm5703_charger_groups;
+ 
+ 	chg->psy = devm_power_supply_register(dev, &sm5703_charger_desc, &cfg);
+ 	if (IS_ERR(chg->psy))
+-- 
+2.47.3
+

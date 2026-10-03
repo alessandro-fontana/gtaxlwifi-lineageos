@@ -1,0 +1,26 @@
+From c61e42f5713bd20e0995ed0df5bb5734d2bc6dde Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 14:39:26 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: reset the cached page on power off
+
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index cfcb35c9bc..78a1e2d469 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -718,6 +718,9 @@ static int hx8279_on(struct hx8279 *hx)
+ 
+ static void hx8279_power_off(struct hx8279 *hx)
+ {
++	/* The DriverIC comes back on page 0 after a power cycle */
++	hx->last_page = 0;
++
+ 	gpiod_set_value_cansleep(hx->reset_gpio, 0);
+ 	usleep_range(100, 500);
+ 	gpiod_set_value_cansleep(hx->enable_gpio, 0);
+-- 
+2.47.3
+

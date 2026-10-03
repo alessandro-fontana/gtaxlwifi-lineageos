@@ -1,0 +1,23 @@
+#
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Entropy seed for the next boot (§43.6).
+#
+# Runs on a booted system, not earlier: the kernel pool has to be mature,
+# otherwise we would store entropy derived from the previous seed, which is
+# exactly the vicious circle to avoid.
+#
+# The "vendor." prefix in the name is mandatory for services declared in
+# /vendor/etc/init. No seclabel: the domain comes from the transition on
+# gtaxl_entropy_seed_exec (§39.4), so it also works in a user build.
+
+service vendor.gtaxl-entropy-seed /vendor/bin/gtaxl-entropy-seed.sh
+    class late_start
+    user root
+    group root
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start vendor.gtaxl-entropy-seed

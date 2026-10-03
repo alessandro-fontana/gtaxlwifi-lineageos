@@ -1,0 +1,177 @@
+From b8d2313632496c84330165a22030c297caeea583 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 10:00:01 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: read the module id and allow a
+ parametrised power sequence
+
+Read the DriverIC module id after power-up and make the power
+sequence timings per-descriptor.
+
+Folds the follow-up change: the id read is opt-in via the
+descriptor's read_ids flag, since not every fitted panel exposes it
+and a failed read is not fatal.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 107 +++++++++++++++++++--
+ 1 file changed, 101 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 282823ce4f..f036b60ec2 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -27,7 +27,12 @@
+ #define HX8279_REG_PAGE			0xb0
+  #define HX8279_PAGE_SEL		GENMASK(3, 0)
+ 
++/* Identification */
++#define HX8279_REG_IC_ID		0xfc
++#define HX8279_IC_ID_LEN		3
++
+ /* Page 0 - Driver/Module Configuration */
++#define HX8279_P0_MODULE_ID		0xb1
+ #define HX8279_P0_UNKNOWN_B6		0xb6
+ #define HX8279_P0_UNKNOWN_BA		0xba
+ #define HX8279_P0_VGHS			0xbf
+@@ -135,6 +140,7 @@ struct hx8279 {
+ 	/* Serializes page switches between modeset and backlight updates */
+ 	struct mutex page_lock;
+ 	bool prepared;
++	bool ids_read;
+ 	u8 last_page;
+ 	bool skip_voltage_config;
+ 	bool skip_goa_config;
+@@ -281,6 +287,14 @@ struct hx8279_panel_desc {
+ 
+ 	/* Page 7..12 */
+ 	const struct hx8279_digital_gamma *dgamma;
++
++	/*
++	 * Power sequencing. A zero keeps the driver defaults, which enable
++	 * both supplies at once and deassert reset with a single edge.
++	 */
++	u16 iovcc_to_vdd_delay_ms;
++	u16 vdd_to_reset_delay_ms;
++	u16 reset_pulse_ms;
+ };
+ 
+ static inline struct hx8279 *to_hx8279(struct drm_panel *panel)
+@@ -794,11 +808,62 @@ static void hx8279_set_digital_gamma(struct hx8279 *hx,
+ 	}
+ }
+ 
++/*
++ * Reading the ids requires a bus turnaround, which not every host and
++ * panel combination survives: keep it opt-in.
++ */
++static bool read_ids;
++module_param(read_ids, bool, 0644);
++MODULE_PARM_DESC(read_ids, "Read the DriverIC and module ids during prepare");
++
++/*
++ * The module vendor is not encoded in the DriverIC id but in a strap
++ * register on page 0. Log both once: it is the only way to tell which
++ * variant of a panel is actually fitted.
++ */
++static void hx8279_read_ids(struct hx8279 *hx,
++			    struct mipi_dsi_multi_context *dsi_ctx)
++{
++	struct mipi_dsi_device *dsi = hx->dsi[0];
++	struct device *dev = &dsi->dev;
++	u8 ic_id[HX8279_IC_ID_LEN] = { };
++	u8 module_id = 0;
++	int i, ret;
++
++	if (!read_ids || hx->ids_read)
++		return;
++
++	hx8279_set_page(hx, dsi_ctx, 0);
++	if (dsi_ctx->accum_err)
++		return;
++
++	for (i = 0; i < HX8279_IC_ID_LEN; i++) {
++		ret = mipi_dsi_dcs_read(dsi, HX8279_REG_IC_ID + i, &ic_id[i], 1);
++		if (ret < 0) {
++			dev_info(dev, "Cannot read DriverIC id: %d\n", ret);
++			return;
++		}
++	}
++
++	ret = mipi_dsi_dcs_read(dsi, HX8279_P0_MODULE_ID, &module_id, 1);
++	if (ret < 0) {
++		dev_info(dev, "Cannot read module id: %d\n", ret);
++		return;
++	}
++
++	dev_info(dev, "DriverIC id %*ph, module id 0x%02x\n",
++		 HX8279_IC_ID_LEN, ic_id, module_id);
++
++	hx->ids_read = true;
++}
++
+ static int hx8279_on(struct hx8279 *hx)
+ {
+ 	struct mipi_dsi_device *dsi = hx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+ 
++	hx8279_read_ids(hx, &dsi_ctx);
++
+ 	/* Page 5 */
+ 	hx8279_set_mipi_cfg(hx, &dsi_ctx);
+ 
+@@ -863,18 +928,48 @@ static int hx8279_enable(struct drm_panel *panel)
+ static int hx8279_prepare(struct drm_panel *panel)
+ {
+ 	struct hx8279 *hx = to_hx8279(panel);
++	const struct hx8279_panel_desc *desc = hx->desc;
+ 	struct mipi_dsi_device *dsi = hx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+ 	int ret;
+ 
+-	ret = regulator_bulk_enable(ARRAY_SIZE(hx->vregs), hx->vregs);
+-	if (ret)
+-		return ret;
++	if (desc->iovcc_to_vdd_delay_ms) {
++		/* Vendor order: I/O rail first, then the panel supply */
++		ret = regulator_enable(hx->vregs[1].consumer);
++		if (ret)
++			return ret;
++
++		msleep(desc->iovcc_to_vdd_delay_ms);
++
++		ret = regulator_enable(hx->vregs[0].consumer);
++		if (ret) {
++			regulator_disable(hx->vregs[1].consumer);
++			return ret;
++		}
++	} else {
++		ret = regulator_bulk_enable(ARRAY_SIZE(hx->vregs), hx->vregs);
++		if (ret)
++			return ret;
++	}
+ 
+ 	gpiod_set_value_cansleep(hx->enable_gpio, 1);
+-	usleep_range(5000, 6000);
+-	gpiod_set_value_cansleep(hx->reset_gpio, 1);
+-	usleep_range(6000, 7000);
++
++	if (desc->vdd_to_reset_delay_ms)
++		msleep(desc->vdd_to_reset_delay_ms);
++	else
++		usleep_range(5000, 6000);
++
++	if (desc->reset_pulse_ms) {
++		gpiod_set_value_cansleep(hx->reset_gpio, 1);
++		msleep(desc->reset_pulse_ms);
++		gpiod_set_value_cansleep(hx->reset_gpio, 0);
++		msleep(desc->reset_pulse_ms);
++		gpiod_set_value_cansleep(hx->reset_gpio, 1);
++		msleep(desc->reset_pulse_ms);
++	} else {
++		gpiod_set_value_cansleep(hx->reset_gpio, 1);
++		usleep_range(6000, 7000);
++	}
+ 
+ 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+ 	if (hx->dsi[1])
+-- 
+2.47.3
+

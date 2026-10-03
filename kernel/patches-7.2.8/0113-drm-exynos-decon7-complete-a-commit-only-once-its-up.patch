@@ -1,0 +1,198 @@
+From 5d2f9c2cb27aa0435b3354b6f0017c89360c7898 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 23 Sep 2026 18:05:55 +0200
+Subject: [PATCH] drm/exynos: decon7: complete a commit only once its update
+ has latched
+
+The DECON programs the windows through shadow registers, which the block
+copies into the active ones at a vblank once DECON_UPDATE_STANDALONE_F
+has been set.  The driver arms the commit's event at flush time, so the
+event goes out at the first vblank after the flush - but a flush that
+lands close enough to that vblank misses it: the interrupt comes, the
+update has not been taken, and the block scans the old buffers for one
+more frame.  Userspace sees the flip as done and the core releases the
+old framebuffers; on Android the hardware composer then closes the last
+reference to the outgoing dma-buf, its IOMMU mapping is torn down while
+the DECON is still fetching it, and the SysMMU takes an unrecoverable
+page fault a few lines into the frame.
+
+STANDALONE_F is a self-clearing trigger: the block clears it when the
+update has been applied.  Keep the event in the driver and send it from
+the vblank handler at the first vblank that finds the bit clear.  The
+vblank is still counted at every interrupt, so vblank timestamps and
+waiters are not affected; only the completion of the commit - the event,
+its out-fence and, with the previous patch, cleanup_planes() - follows
+the hardware instead of the clock.
+
+A commit that has not latched after four vblanks is completed anyway
+with a warning, rather than being left to the ten second flip_done
+timeout.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 121 ++++++++++++++++++++-
+ 1 file changed, 120 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index 01064c6473..e1aba6822d 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -77,6 +77,14 @@ struct decon_context {
+ 	atomic_t			wait_vsync_event;
+ 	unsigned long			underrun_count;
+ 
++	/*
++	 * The event of the last commit, held until the shadow registers
++	 * have latched it, and the vblanks it has waited so far. Both under
++	 * drm_dev->event_lock.
++	 */
++	struct drm_pending_vblank_event	*event;
++	unsigned int			event_vblanks;
++
+ 	const struct decon_data *data;
+ 	struct drm_encoder *encoder;
+ };
+@@ -629,6 +637,110 @@ static void decon_start_scanout(struct decon_context *ctx)
+ 
+ 	ctx->scanout_on = true;}
+ 
++/*
++ * How many vblanks a commit may wait for its registers to latch before it is
++ * completed anyway. One is the normal case, two is a flush that missed the
++ * vblank; more means the trigger bit is not doing what this driver thinks,
++ * and it is better to warn and go on than to stall the commit for the ten
++ * seconds of the flip_done timeout.
++ */
++#define DECON_LATCH_MAX_VBLANKS	4
++
++/*
++ * Hold the commit's event until the shadow registers have really latched.
++ *
++ * DECON_UPDATE_STANDALONE_F is a trigger: the driver sets it once the
++ * windows are programmed, and the block clears it when it copies the shadow
++ * registers into the active ones, at a vblank. A flush that lands close
++ * enough to the vblank misses it - the interrupt comes, the bit is still
++ * set, and the block goes on scanning the old buffers for one more frame.
++ * Arming the event with drm_crtc_arm_vblank_event() sends it at that very
++ * interrupt, and the old buffers are released while they are still being
++ * fetched: the composer closes the last reference to the dma-buf, the IOMMU
++ * mapping goes away, and the SysMMU faults under the scanout.
++ *
++ * So the event is kept here and sent from the vblank handler at the first
++ * vblank that finds the bit clear. The vblank itself is still counted at
++ * every interrupt - only the completion of the commit waits.
++ */
++static void decon_queue_event(struct decon_context *ctx)
++{
++	struct drm_crtc *crtc = &ctx->crtc->base;
++	struct drm_pending_vblank_event *event = crtc->state->event;
++	unsigned long flags;
++	int ret;
++
++	if (!event)
++		return;
++	crtc->state->event = NULL;
++
++	ret = drm_crtc_vblank_get(crtc);
++
++	spin_lock_irqsave(&crtc->dev->event_lock, flags);
++	if (WARN_ON(ret != 0)) {
++		/* no vblank interrupt to wait for */
++		drm_crtc_send_vblank_event(crtc, event);
++	} else {
++		WARN_ON(ctx->event);
++		ctx->event = event;
++		ctx->event_vblanks = 0;
++	}
++	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++}
++
++/* From the vblank interrupt, after the vblank has been counted. */
++static void decon_handle_event(struct decon_context *ctx)
++{
++	struct drm_crtc *crtc = &ctx->crtc->base;
++	struct drm_pending_vblank_event *event;
++	bool latched;
++
++	spin_lock(&crtc->dev->event_lock);
++
++	event = ctx->event;
++	if (!event) {
++		spin_unlock(&crtc->dev->event_lock);
++		return;
++	}
++
++	latched = !(readl(ctx->regs + DECON_UPDATE) &
++		    DECON_UPDATE_STANDALONE_F);
++	if (!latched && ++ctx->event_vblanks < DECON_LATCH_MAX_VBLANKS) {
++		spin_unlock(&crtc->dev->event_lock);
++		return;
++	}
++
++	if (!latched)
++		dev_warn_ratelimited(ctx->dev,
++				     "update not latched after %u vblanks, completing the commit anyway\n",
++				     ctx->event_vblanks);
++
++	ctx->event = NULL;
++	drm_crtc_send_vblank_event(crtc, event);
++
++	spin_unlock(&crtc->dev->event_lock);
++
++	drm_crtc_vblank_put(crtc);
++}
++
++/* Nothing will latch once the block is off: complete what is left. */
++static void decon_flush_event(struct decon_context *ctx)
++{
++	struct drm_crtc *crtc = &ctx->crtc->base;
++	struct drm_pending_vblank_event *event;
++	unsigned long flags;
++
++	spin_lock_irqsave(&crtc->dev->event_lock, flags);
++	event = ctx->event;
++	ctx->event = NULL;
++	if (event)
++		drm_crtc_send_vblank_event(crtc, event);
++	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++
++	if (event)
++		drm_crtc_vblank_put(crtc);
++}
++
+ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
+ {
+ 	struct decon_context *ctx = crtc->ctx;
+@@ -639,7 +751,11 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
+ 
+ 	decon_start_scanout(ctx);
+ 
+-	exynos_crtc_handle_event(crtc);
++	/* the i80 interface does not count vblanks in this driver */
++	if (ctx->i80_if)
++		exynos_crtc_handle_event(crtc);
++	else
++		decon_queue_event(ctx);
+ }
+ 
+ /*
+@@ -768,6 +884,8 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
+ 	u32 val;
+ 	int i;
+ 
++	decon_flush_event(ctx);
++
+ 	/*
+ 	 * We need to make sure that all windows are disabled before we
+ 	 * suspend that connector. Otherwise we might try to scan from
+@@ -837,6 +955,7 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
+ 
+ 	if (!ctx->i80_if) {
+ 		drm_crtc_handle_vblank(&ctx->crtc->base);
++		decon_handle_event(ctx);
+ 
+ 		/* set wait vsync event to zero and wake up queue. */
+ 		if (atomic_read(&ctx->wait_vsync_event)) {
+-- 
+2.47.3
+

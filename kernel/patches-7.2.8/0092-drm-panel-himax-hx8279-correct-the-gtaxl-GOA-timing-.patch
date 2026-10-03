@@ -1,0 +1,53 @@
+From aa810712562e63702341138a2ef7e3f4aa803e95 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 10:51:08 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: correct the gtaxl GOA timing against
+ the vendor table
+
+The vendor init table for this panel writes exactly seven registers on
+page 3: C5=2C, DE=2C, CA=42, D6=88, D7=08, D2=06, D3=06. Three of those
+are programmed differently here.
+
+C5 is GOA_TO(3) and DE is GOA_TE(1), so the odd and even timing arrays
+in the panel description are the vendor's two values surrounded by
+zeroes - but they hold 42 decimal, which is 0x2a, not the 0x2c the
+vendor writes: both gate timings are two units short, and the value
+looks like a hex figure transcribed as if it were decimal. CA holds the
+dummy vblank count, written as three where the vendor asks for two.
+
+Gate timing is what draws alternate lines, and this panel comes back
+from a short screen off with horizontal stripes at line pitch on roughly
+one wake-up in ten. Rewriting the whole init table on a striped panel
+makes them fainter but does not clear them, while a power cycle always
+does, which is consistent with the values being wrong rather than lost.
+
+Use the vendor values, written in hex so they can be compared with the
+table at a glance. D2, D3, D6 and D7 are still not programmed at all,
+and C8, C9, CB, E4, E5 and E7 are written although the vendor never
+touches them; those are left alone here.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index 82df51937f..b84980f110 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -1910,11 +1910,11 @@ static const struct hx8279_panel_desc boe_hx8279d_gtaxl = {
+ 	.gmux = &boe_hx8279d_gtaxl_gmux,
+ 
+ 	/* Gate driver On Array (GOA) Configuration */
+-	.goa_odd_timing = { 0, 0, 0, 42, 0, 0 },
+-	.goa_even_timing = { 0, 42, 0, 0, 0, 0 },
++	.goa_odd_timing = { 0, 0, 0, 0x2c, 0, 0 },
++	.goa_even_timing = { 0, 0x2c, 0, 0, 0, 0 },
+ 	.goa_stv_lead_time_ck = 11,
+ 	.goa_ckv_lead_time_ck = 7,
+-	.goa_ckv_dummy_vblank_num = 3,
++	.goa_ckv_dummy_vblank_num = 2,
+ 	.goa_ckv_rise_precharge = 40,
+ 	.goa_clr_polarity = { -1, -1, -1, -1 },
+ 	.goa_clr_start_pos = { -1, -1, -1, -1 },
+-- 
+2.47.3
+

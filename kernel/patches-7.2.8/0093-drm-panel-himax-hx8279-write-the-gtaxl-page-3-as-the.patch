@@ -1,0 +1,138 @@
+From 385ac21debc3ef77fe50da7e61db31d6bd016108 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 10 Sep 2026 11:33:31 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: write the gtaxl page 3 as the vendor
+ does
+
+The vendor init table touches exactly seven registers on page 3 - C5,
+DE, CA, D6, D7, D2, D3 - and leaves everything else on that page at its
+factory value. The computed GOA configuration in this driver does not
+match that on either side: D2, D3, D6 and D7 are never programmed, while
+C8, C9, CB, E4, E5 and E7 are written with values that have no
+counterpart in the vendor table. Page 3 is the gate driver, and this
+panel comes back from a short screen off with horizontal stripes at line
+pitch on roughly one wake-up in ten; correcting the two timing values
+and the dummy vblank count made them much rarer but did not stop them.
+
+Give the description a verbatim page 3 table for gtaxl and drop its
+computed GOA fields. With all of those at zero hx8279_check_params()
+raises skip_goa_timing and skip_goa_config on its own, so the computed
+path writes nothing and the panel sees the vendor's seven registers and
+nothing else. Panels that describe their GOA configuration keep the
+computed path unchanged.
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 63 ++++++++++++++++++----
+ 1 file changed, 52 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index b84980f110..28b6431142 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -223,6 +223,16 @@ struct hx8279_digital_gamma {
+ 	u8 b[HX8279_PG_DGAMMA_NUM_LO_BYTES + HX8279_PG_DGAMMA_NUM_HI_BYTES];
+ };
+ 
++/**
++ * struct hx8279_goa_reg - One page 3 register as the vendor writes it
++ * @reg: Register address on page 3
++ * @val: Value to write
++ */
++struct hx8279_goa_reg {
++	u8 reg;
++	u8 val;
++};
++
+ struct hx8279_panel_desc {
+ 	const struct mipi_dsi_device_info dsi_info;
+ 	const struct hx8279_panel_mode *mode_data;
+@@ -250,6 +260,15 @@ struct hx8279_panel_desc {
+ 	/* Page 2 */
+ 	const struct hx8279_analog_gamma *agamma;
+ 
++	/*
++	 * Page 3, written verbatim. When set, the computed GOA
++	 * configuration below is left out entirely: leaving every field
++	 * of it at zero makes hx8279_check_params() raise both skip
++	 * flags, so only these registers reach the panel.
++	 */
++	const struct hx8279_goa_reg *goa_raw;
++	u8 num_goa_raw;
++
+ 	/* Page 3 */
+ 	u8 goa_unk_ba;
+ 	u8 goa_odd_timing[6];
+@@ -457,6 +476,26 @@ static void hx8279_set_analog_gamma(struct hx8279 *hx,
+ 	}
+ }
+ 
++static void hx8279_set_goa_raw(struct hx8279 *hx,
++			       struct mipi_dsi_multi_context *dsi_ctx)
++{
++	const struct hx8279_panel_desc *desc = hx->desc;
++	u8 cmd_set_goa[2];
++	int i;
++
++	if (!desc->goa_raw)
++		return;
++
++	hx8279_set_page(hx, dsi_ctx, 3);
++
++	for (i = 0; i < desc->num_goa_raw; i++) {
++		cmd_set_goa[0] = desc->goa_raw[i].reg;
++		cmd_set_goa[1] = desc->goa_raw[i].val;
++		mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_goa,
++					     ARRAY_SIZE(cmd_set_goa));
++	}
++}
++
+ static void hx8279_set_goa_timing(struct hx8279 *hx,
+ 				  struct mipi_dsi_multi_context *dsi_ctx)
+ {
+@@ -901,6 +940,7 @@ static int hx8279_on(struct hx8279 *hx)
+ 	hx8279_set_analog_gamma(hx, &dsi_ctx);
+ 
+ 	/* Page 3 */
++	hx8279_set_goa_raw(hx, &dsi_ctx);
+ 	hx8279_set_goa_cfg(hx, &dsi_ctx);
+ 	hx8279_set_goa_timing(hx, &dsi_ctx);
+ 
+@@ -1883,6 +1923,16 @@ static const struct hx8279_digital_gamma boe_hx8279d_gtaxl_dig_gamma = {
+ 	       0xa5, 0xaf, 0xb5, 0xb8, 0x00, 0x00, 0x05, 0x6b, 0xff, 0xff },
+ };
+ 
++static const struct hx8279_goa_reg boe_hx8279d_gtaxl_goa[] = {
++	{ 0xc5, 0x2c },	/* GOA_TO(3) */
++	{ 0xde, 0x2c },	/* GOA_TE(1) */
++	{ 0xca, 0x42 },	/* CKV dummy vblank */
++	{ 0xd6, 0x88 },	/* CLR3 config */
++	{ 0xd7, 0x08 },	/* CLR4 config */
++	{ 0xd2, 0x06 },	/* CLR1 width adjust */
++	{ 0xd3, 0x06 },	/* CLR2..4 width adjust */
++};
++
+ static const struct hx8279_panel_desc boe_hx8279d_gtaxl = {
+ 	.dsi_info = {
+ 		.type = "HX8279D-BOE2",
+@@ -1910,17 +1960,8 @@ static const struct hx8279_panel_desc boe_hx8279d_gtaxl = {
+ 	.gmux = &boe_hx8279d_gtaxl_gmux,
+ 
+ 	/* Gate driver On Array (GOA) Configuration */
+-	.goa_odd_timing = { 0, 0, 0, 0x2c, 0, 0 },
+-	.goa_even_timing = { 0, 0x2c, 0, 0, 0, 0 },
+-	.goa_stv_lead_time_ck = 11,
+-	.goa_ckv_lead_time_ck = 7,
+-	.goa_ckv_dummy_vblank_num = 2,
+-	.goa_ckv_rise_precharge = 40,
+-	.goa_clr_polarity = { -1, -1, -1, -1 },
+-	.goa_clr_start_pos = { -1, -1, -1, -1 },
+-	.goa_unk_e4 = 0xc0,
+-	.goa_unk_e5 = 0x0d,
+-	.goa_unk_e7 = 0x00,
++	.goa_raw = boe_hx8279d_gtaxl_goa,
++	.num_goa_raw = ARRAY_SIZE(boe_hx8279d_gtaxl_goa),
+ 
+ 	/* MIPI Configuration */
+ 	.eotp_ctl = 0xe5,
+-- 
+2.47.3
+

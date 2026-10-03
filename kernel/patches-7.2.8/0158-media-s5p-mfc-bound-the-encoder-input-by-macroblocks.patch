@@ -1,0 +1,72 @@
+From f26c3ca70a2036593da3cd4e65c485f1bdfe85b1 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 11:48:01 +0200
+Subject: [PATCH] media: s5p-mfc: bound the encoder input by macroblocks, not
+ by 1080 lines
+
+Before MFC v12 the encoder input is clamped to 1920x1080, or 1080x1920
+in portrait. The hardware limit is a macroblock count, 1920x1088, and
+the MFC codes a 1080p frame as 1088 lines anyway. Userspace that takes
+its limits from the codec list (1920x1088, 8160 blocks) picks sizes
+such as 1740x1088 for a 1920x1200 screen, and the clamp to 1080 lines
+makes the encoder refuse them: Android's screen recorder fails in
+MediaRecorder.prepare().
+
+Bound each side by 1920 and the area by 8160 macroblocks.
+
+Tested on Exynos7870 (MFC 0xa0b0): Android's screen recorder now records
+HEVC at 1740x1088, with and without the microphone.
+
+---
+ .../platform/samsung/s5p-mfc/s5p_mfc_enc.c    | 25 +++++++++++++------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
+index 65baa4ad38..2cea36d585 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_enc.c
+@@ -1433,6 +1433,9 @@ static int vidioc_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 	return 0;
+ }
+ 
++/* 1920x1088 in macroblocks, the most the encoder takes before MFC v12. */
++#define S5P_MFC_ENC_MAX_MBS	8160
++
+ static int vidioc_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ {
+ 	struct s5p_mfc_dev *dev = video_drvdata(file);
+@@ -1462,16 +1465,24 @@ static int vidioc_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
+ 			mfc_err("Unsupported format by this MFC version.\n");
+ 			return -EINVAL;
+ 		}
+-		if (IS_MFCV12(dev))
++		if (IS_MFCV12(dev)) {
+ 			v4l_bound_align_image(&pix_fmt_mp->width, 8, 3840, 1, &pix_fmt_mp
+ 					->height, 4, 2160, 1, 0);
+-		else if (pix_fmt_mp->height > pix_fmt_mp->width)
+-			/* Portrait: the same number of macroblocks as 1080p. */
+-			v4l_bound_align_image(&pix_fmt_mp->width, 8, 1080, 1, &pix_fmt_mp
+-					->height, 4, 1920, 1, 0);
+-		else
++		} else {
++			unsigned int mb_w, max_mb_h;
++
++			/*
++			 * The limit is a macroblock count, 1920x1088 = 8160, in
++			 * either orientation: 1080 would reject the 1088 lines
++			 * that a 1080p frame is coded with anyway.
++			 */
+ 			v4l_bound_align_image(&pix_fmt_mp->width, 8, 1920, 1, &pix_fmt_mp
+-					->height, 4, 1080, 1, 0);
++					->height, 4, 1920, 1, 0);
++			mb_w = DIV_ROUND_UP(pix_fmt_mp->width, 16);
++			max_mb_h = S5P_MFC_ENC_MAX_MBS / mb_w;
++			if (DIV_ROUND_UP(pix_fmt_mp->height, 16) > max_mb_h)
++				pix_fmt_mp->height = max_mb_h * 16;
++		}
+ 	} else {
+ 		mfc_err("invalid buf type\n");
+ 		return -EINVAL;
+-- 
+2.47.3
+

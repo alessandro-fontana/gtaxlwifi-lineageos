@@ -1,0 +1,90 @@
+From 8f64f0812477bed8f09f5b51c3b8aea3e048d277 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 14 Aug 2026 19:30:00 +0000
+Subject: [PATCH] extcon: sm5502: clear the previous cable when the type
+ changes
+
+sm5502_muic_cable_handler() only ever touches the extcon id of the cable
+it has just identified.  When one cable type replaces another without an
+intervening detach - unplugging a wall charger and plugging a USB host
+port, for instance - the id of the previous type is never lowered and
+stays asserted for the rest of the session.
+
+On a Galaxy Tab A (SM-T580) the extcon device ends up reporting both
+DCP=1 and SDP=1 with only a USB host port attached.  A charger driver
+consuming the notifier then picks the DCP limit, drawing 1.65 A from a
+port rated for 0.5 A, which is precisely what the per-cable limit exists
+to prevent.  Nothing clears the state short of a reboot.
+
+Lower every other cable this driver reports before publishing the
+current one.
+
+While here, move prev_cable_type into struct sm5502_muic_info.  As a
+function-local static it was shared by every instance of the driver
+rather than tracked per device.  Zero-initialised allocation keeps the
+previous SM5502_MUIC_ADC_GROUND default.
+---
+ drivers/extcon/extcon-sm5502.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index f3add0b644..a290a21c1c 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -45,6 +45,7 @@ struct sm5502_muic_info {
+ 	int irq;
+ 	bool irq_attach;
+ 	bool irq_detach;
++	unsigned int prev_cable_type;
+ 	struct work_struct irq_work;
+ 
+ 	struct mutex mutex;
+@@ -489,19 +490,19 @@ static unsigned int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
+ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
+ 				     bool attached)
+ {
+-	static unsigned int prev_cable_type = SM5502_MUIC_ADC_GROUND;
+ 	unsigned int cable_type = SM5502_MUIC_ADC_GROUND;
+ 	unsigned int con_sw = DM_DP_SWITCH_OPEN;
+ 	unsigned int vbus_sw = VBUSIN_SWITCH_OPEN;
+ 	unsigned int id;
+ 	int ret;
++	int i;
+ 
+ 	/* Get the type of attached or detached cable */
+ 	if (attached)
+ 		cable_type = sm5502_muic_get_cable_type(info);
+ 	else
+-		cable_type = prev_cable_type;
+-	prev_cable_type = cable_type;
++		cable_type = info->prev_cable_type;
++	info->prev_cable_type = cable_type;
+ 
+ 	switch (cable_type) {
+ 	case SM5502_MUIC_ADC_OPEN_USB:
+@@ -531,6 +532,22 @@ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/*
++	 * A cable type can replace another without an intervening detach,
++	 * so lower every other id this driver reports: otherwise the
++	 * previous type stays asserted and consumers see two cables at
++	 * once.
++	 */
++	for (i = 0; sm5502_extcon_cable[i] != EXTCON_NONE; i++) {
++		unsigned int cable = sm5502_extcon_cable[i];
++
++		if (cable == id ||
++		    (id == EXTCON_USB && cable == EXTCON_CHG_USB_SDP))
++			continue;
++
++		extcon_set_state_sync(info->edev, cable, false);
++	}
++
+ 	/* Change the state of external accessory */
+ 	extcon_set_state_sync(info->edev, id, attached);
+ 	if (id == EXTCON_USB)
+-- 
+2.47.3
+

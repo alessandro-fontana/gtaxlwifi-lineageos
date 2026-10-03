@@ -1,0 +1,64 @@
+From c7f99a88e8ef86b8495393ce93cd0b1e475d1db4 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Tue, 8 Sep 2026 12:45:44 +0000
+Subject: [PATCH] drm/exynos: decon7: report DECON FIFO underruns
+
+The DECON raises VIDINTCON1_INT_FIFO when its output FIFO runs dry
+during scanout, which produces a corrupt or repeated frame with no
+other externally visible symptom: the atomic commit completes, the
+vblank event is delivered on time, and every counter in userspace
+reports a frame presented on schedule.
+
+The driver never enables the interrupt, so the condition is silent.
+The Samsung downstream driver enables it together with the frame
+interrupt (decon_reg_set_int(), VIDINTCON0_INT_FIFO with
+FIFOLEVEL_EMPTY), which is how the same hardware was operated in the
+vendor tree.
+
+Enable it in video mode alongside the frame interrupt, count the
+occurrences and log them rate-limited. This changes no behaviour when
+the FIFO does not underrun.
+---
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index 8c9b6a1b15..f80f2126f0 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -75,6 +75,7 @@ struct decon_context {
+ 	bool				scanout_on;
+ 	wait_queue_head_t		wait_vsync_queue;
+ 	atomic_t			wait_vsync_event;
++	unsigned long			underrun_count;
+ 
+ 	const struct decon_data *data;
+ 	struct drm_encoder *encoder;
+@@ -293,6 +294,9 @@ static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
+ 			val |= VIDINTCON0_INT_FRAME;
+ 			val &= ~VIDINTCON0_FRAMESEL0_MASK;
+ 			val |= VIDINTCON0_FRAMESEL0_VSYNC;
++			val |= VIDINTCON0_INT_FIFO;
++			val &= ~VIDINTCON0_FIFOLEVEL_MASK;
++			val |= VIDINTCON0_FIFOLEVEL_EMPTY;
+ 		}
+ 
+ 		writel(val, ctx->regs + VIDINTCON0);
+@@ -782,6 +786,14 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
+ 	if (val & clear_bit)
+ 		writel(clear_bit, ctx->regs + VIDINTCON1);
+ 
++	if (val & VIDINTCON1_INT_FIFO) {
++		writel(VIDINTCON1_INT_FIFO, ctx->regs + VIDINTCON1);
++		ctx->underrun_count++;
++		dev_err_ratelimited(ctx->dev,
++				    "FIFO underrun (%lu total)\n",
++				    ctx->underrun_count);
++	}
++
+ 	/* check the crtc is detached already from encoder */
+ 	if (!ctx->drm_dev)
+ 		goto out;
+-- 
+2.47.3
+

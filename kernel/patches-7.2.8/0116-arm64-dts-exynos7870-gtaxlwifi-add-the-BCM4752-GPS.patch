@@ -1,0 +1,77 @@
+From b651a229447e24bccdf5e9466367dd63b7a14d4b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 08:57:42 +0200
+Subject: [PATCH] arm64: dts: exynos7870-gtaxlwifi: add the BCM4752 GPS
+
+The tablet has a Broadcom BCM4752 GNSS receiver on the UART at 0x13800000
+(serial0 here, "UART_SENSOR" downstream), on the gpd2-0..3 pins that the
+mainline uart0_bus group already describes, and its enable line is gpc2-2
+(GPS_EN in the downstream device tree, GPS_PWON in its pin table).
+
+The BCM4752 does not speak NMEA: only Broadcom's proprietary daemon knows
+its protocol, and that daemon opens the tty itself and drives the enable
+line by writing "1" or "0" to a file. Downstream that file came from a
+Samsung-only driver. Mainline already handles this very chip, when ACPI
+describes it (BCM4752, LNV4752), with rfkill-gpio, whose state attribute
+takes exactly "1" (unblocked, powered) and "0" (blocked, off). Describe it
+the same way, blocked by default so that the receiver stays off until the
+daemon asks for it.
+
+serial0 gets no child node, so it stays a plain tty for the daemon.
+
+Signed-off-by: Alessandro Fontana <alessandro.fontana@pm.me>
+---
+ .../boot/dts/exynos/exynos7870-gtaxlwifi.dts  | 37 +++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+index 813a1d7a29..c86155ca9c 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtaxlwifi.dts
+@@ -669,6 +669,43 @@ bluetooth {
+ 	};
+ };
+ 
++/*
++ * ======================================================================
++ * GPS — Broadcom BCM4752 su UART
++ * ======================================================================
++ * Cablaggio, da exynos7870-gtaxlwifi_eur_open_05.dts e dal relativo
++ * _gpio_05.dtsi downstream:
++ *
++ *   serial@13800000 (downstream serial_1, "UART_SENSOR") con i pin
++ *   gpd2-0..3 = GPS_RXD/TXD/CTS/RTS, cioe' il uart0_bus di mainline;
++ *   gps { compatible = "samsung,exynos-bcm4752";
++ *         gpios = <&gpc2 2 0x1>;   GPS_EN (GPS_PWON nel _gpio_) }
++ *
++ * Il BCM4752 non parla NMEA: il protocollo sulla UART lo conosce solo il
++ * gpsd proprietario (glgps), che apre la tty a 921600 e governa il pin
++ * di accensione scrivendo "1"/"0" in un file (GpioNStdbyPath di gps.xml).
++ * Downstream quel file era /sys/class/sec/gps/GPS_PWR_EN/value, esportato
++ * da sec_gps_bcm4752.c. In mainline lo stesso chip, descritto da ACPI
++ * (BCM4752, LNV4752), e' gestito da rfkill-gpio, e lo stato di un rfkill
++ * accetta esattamente "1" (sbloccato, acceso) e "0" (bloccato, spento).
++ * default-blocked: il chip resta spento finche' gpsd non lo chiede.
++ *
++ * La UART resta una tty (ttySAC0): senza nodi figli serdev non la prende.
++ */
++&serial0 {
++	status = "okay";
++};
++
++/ {
++	gps {
++		compatible = "rfkill-gpio";
++		label = "bcm4752";
++		radio-type = "gps";
++		shutdown-gpios = <&gpc2 2 GPIO_ACTIVE_HIGH>;	/* GPS_EN */
++		default-blocked;
++	};
++};
++
+ /*
+  * ======================================================================
+  * PMIC S2MPU05
+-- 
+2.47.3
+

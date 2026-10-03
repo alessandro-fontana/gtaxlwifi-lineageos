@@ -1,0 +1,11 @@
+#
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# No seclabel: the domain comes from the transition on the _exec type
+# (sepolicy/vendor/file_contexts), as for the project's other services
+# (03-metodo-e-trappole.md §39.4).
+service vendor.touch-gtaxlwifi /vendor/bin/hw/vendor.lineage.touch-service.gtaxlwifi
+    class hal
+    user system
+    group system

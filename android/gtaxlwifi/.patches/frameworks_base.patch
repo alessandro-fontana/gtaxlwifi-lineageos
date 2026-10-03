@@ -1,0 +1,165 @@
+diff --git a/libs/hwui/Properties.cpp b/libs/hwui/Properties.cpp
+index 6d81a0fab..ec84bbc95 100644
+--- a/libs/hwui/Properties.cpp
++++ b/libs/hwui/Properties.cpp
+@@ -108,6 +108,7 @@ bool Properties::isForceInvertEnabled = false;
+ float Properties::maxHdrHeadroomOn8bit = 5.f;  // TODO: Refine this number
+ 
+ bool Properties::clipSurfaceViews = false;
++bool Properties::stretchUniformSkipsLayer = false;
+ bool Properties::hdr10bitPlus = false;
+ bool Properties::skipTelemetry = false;
+ 
+@@ -117,6 +118,32 @@ StretchEffectBehavior Properties::stretchEffectBehavior = StretchEffectBehavior:
+ 
+ DrawingEnabled Properties::drawingEnabled = DrawingEnabled::NotInitialized;
+ 
++static std::optional<StretchEffectBehavior> stretchEffectBehaviorOverride() {
++    std::string value = base::GetProperty(PROPERTY_STRETCH_EFFECT_BEHAVIOR, "");
++    if (value.empty()) {
++        return std::nullopt;
++    }
++    if (value == "uniform_scale") {
++        return StretchEffectBehavior::UniformScale;
++    }
++    if (value == "shader") {
++        return StretchEffectBehavior::Shader;
++    }
++    if (value == "shader_hwui") {
++        return StretchEffectBehavior::ShaderHWUI;
++    }
++    ALOGW("Unknown value '%s' for %s, ignoring", value.c_str(),
++          PROPERTY_STRETCH_EFFECT_BEHAVIOR);
++    return std::nullopt;
++}
++
++void Properties::setIsHighEndGfx(bool isHighEndGfx) {
++    Properties::isHighEndGfx = isHighEndGfx;
++    stretchEffectBehavior = stretchEffectBehaviorOverride().value_or(
++            isHighEndGfx ? StretchEffectBehavior::ShaderHWUI
++                         : StretchEffectBehavior::UniformScale);
++}
++
+ bool Properties::load() {
+     bool prevDebugLayersUpdates = debugLayersUpdates;
+     bool prevDebugOverdraw = debugOverdraw;
+@@ -185,11 +212,19 @@ bool Properties::load() {
+     clipSurfaceViews =
+             base::GetBoolProperty("debug.hwui.clip_surfaceviews", hwui_flags::clip_surfaceviews());
+     hdr10bitPlus = hwui_flags::hdr_10bit_plus();
++    stretchUniformSkipsLayer =
++            base::GetBoolProperty(PROPERTY_STRETCH_UNIFORM_SKIPS_LAYER, false);
+ 
+     timeoutMultiplier = android::base::GetIntProperty("ro.hw_timeout_multiplier", 1);
+     skipTelemetry = base::GetBoolProperty(PROPERTY_SKIP_EGLMANAGER_TELEMETRY,
+                                           hwui_flags::skip_eglmanager_telemetry());
+ 
++    // setIsHighEndGfx() may run before or after load(); apply the override
++    // from both places so that the property wins regardless of the order.
++    if (auto behavior = stretchEffectBehaviorOverride()) {
++        stretchEffectBehavior = *behavior;
++    }
++
+     return (prevDebugLayersUpdates != debugLayersUpdates) || (prevDebugOverdraw != debugOverdraw);
+ }
+ 
+diff --git a/libs/hwui/Properties.h b/libs/hwui/Properties.h
+index 9b8465fee..d5fb3c417 100644
+--- a/libs/hwui/Properties.h
++++ b/libs/hwui/Properties.h
+@@ -137,6 +137,28 @@ enum DebugLevel {
+  */
+ #define PROPERTY_RENDERER "debug.hwui.renderer"
+ 
++/**
++ * Overrides how the overscroll stretch effect is rendered. By default the
++ * behavior is derived from ActivityManager.isHighEndGfx(): "shader_hwui" on
++ * high end devices, "uniform_scale" otherwise. Possible values:
++ *   "shader_hwui"   - stretch shader in HWUI, matrix scale in SurfaceFlinger
++ *   "shader"        - stretch shader in both HWUI and SurfaceFlinger
++ *   "uniform_scale" - a linear scale everywhere, no full-size shader pass
++ * Intended for devices whose GPU is fast enough to not be low-end but too slow
++ * to run a full-window runtime shader every frame. Read at process start.
++ */
++#define PROPERTY_STRETCH_EFFECT_BEHAVIOR "debug.hwui.stretch_effect_behavior"
++
++/**
++ * When the stretch effect behavior is UniformScale the stretch is a matrix
++ * concat applied while the node is drawn (RenderNodeDrawable::setViewProperties),
++ * yet StretchEffect::requiresLayer() still promotes the node to a full size
++ * RenderLayer that is re-rendered on every frame of the spring. Setting this
++ * property to true skips that layer, which is the point of the uniform scale
++ * behavior in the first place. Read at process start.
++ */
++#define PROPERTY_STRETCH_UNIFORM_SKIPS_LAYER "debug.hwui.stretch_uniform_skips_layer"
++
+ /**
+  * Allows to collect a recording of Skia drawing commands.
+  */
+@@ -354,6 +376,7 @@ public:
+     static float maxHdrHeadroomOn8bit;
+ 
+     static bool clipSurfaceViews;
++    static bool stretchUniformSkipsLayer;
+     static bool hdr10bitPlus;
+     static bool skipTelemetry;
+ 
+@@ -363,12 +386,11 @@ public:
+         return stretchEffectBehavior;
+     }
+ 
+-    static void setIsHighEndGfx(bool isHighEndGfx) {
+-        Properties::isHighEndGfx = isHighEndGfx;
+-        stretchEffectBehavior = isHighEndGfx ?
+-            StretchEffectBehavior::ShaderHWUI :
+-            StretchEffectBehavior::UniformScale;
+-    }
++    /**
++     * Picks the stretch effect behavior from the device class, unless
++     * PROPERTY_STRETCH_EFFECT_BEHAVIOR overrides it.
++     */
++    static void setIsHighEndGfx(bool isHighEndGfx);
+ 
+     static void setIsLowRam(bool isLowRam) { Properties::isLowRam = isLowRam; }
+ 
+diff --git a/libs/hwui/effects/StretchEffect.h b/libs/hwui/effects/StretchEffect.h
+index 7eb640447..e1550707b 100644
+--- a/libs/hwui/effects/StretchEffect.h
++++ b/libs/hwui/effects/StretchEffect.h
+@@ -108,6 +108,13 @@ public:
+     }
+ 
+     bool requiresLayer() const {
++        // With UniformScale the stretch is applied as a matrix concat on the
++        // canvas that draws this node, so promoting it to a full size
++        // RenderLayer only costs a render target and a copy per frame.
++        if (Properties::stretchUniformSkipsLayer &&
++            Properties::getStretchEffectBehavior() == StretchEffectBehavior::UniformScale) {
++            return false;
++        }
+         return !isEmpty();
+     }
+ 
+diff --git a/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt b/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
+index c8c03aacb..fbb77653b 100644
+--- a/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
++++ b/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
+@@ -38,7 +38,17 @@ class DesktopFirstRepository @Inject constructor(desktopMode: Optional<DesktopMo
+     private val _isDisplayDesktopFirst: MutableMap<Int, Boolean> = mutableMapOf()
+ 
+     init {
+-        desktopMode.ifPresent { desktopMode.get().registerDesktopFirstListener(this) }
++        desktopMode.ifPresent {
++            try {
++                it.registerDesktopFirstListener(this)
++            } catch (e: UnsupportedOperationException) {
++                // DesktopMode is provided whenever canEnterDesktopModeOrShowAppHandle() is
++                // true, but registerDesktopFirstListener() throws unless canEnterDesktopMode()
++                // and ENABLE_DESKTOP_FIRST_LISTENER are both true. On devices that only
++                // support the app handle the exception escapes this Dagger constructor and
++                // kills SystemUI in a boot loop. There is nothing to track, so ignore it.
++            }
++        }
+     }
+ 
+     /**

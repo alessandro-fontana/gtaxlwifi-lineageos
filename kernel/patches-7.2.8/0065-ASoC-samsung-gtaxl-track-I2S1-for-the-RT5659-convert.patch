@@ -1,0 +1,79 @@
+From e8410c450c1a9f48ae8bef15acb1f3626a609057 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 22 Aug 2026 20:57:10 +0000
+Subject: [PATCH] ASoC: samsung: gtaxl: track I2S1 for the RT5659 converter
+ filters
+
+The vendor mixer_paths.xml sets all four "... Clk Sel" controls
+(AD MONOL, AD MONOR, AD STO1, DA STO) to clk_i2s1_track, so the
+converter filters follow the I2S1 clock rather than SYSCLK.  That
+configuration is written at runtime by the Android HAL, so in a port
+without one nothing writes it.
+
+It cannot be reproduced by enabling the ASRC supplies alone.  The
+rt5659 driver routes them through is_using_asrc(), which reads the
+tracking source back from ASRC_2 and ASRC_3 and returns false unless
+it names an I2S; mainline never writes either register, so they stay
+at 0 (SYSCLK) and the ASRC never powers up no matter what ASRC_1
+contains.
+
+Program the two registers from hw_params(), which runs before the DAPM
+stream event evaluates is_using_asrc(), and through the codec regmap so
+the values survive a cache resync across codec runtime PM.
+
+This makes the converter filters independent of SYSCLK jitter, which
+matters here because PLL1 multiplies a 3.072 MHz bus clock by eight and
+that clock only exists while a stream is running.
+---
+ sound/soc/samsung/gtaxl_rt5659.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/sound/soc/samsung/gtaxl_rt5659.c b/sound/soc/samsung/gtaxl_rt5659.c
+index 9f7d03b2cb..41883b43a5 100644
+--- a/sound/soc/samsung/gtaxl_rt5659.c
++++ b/sound/soc/samsung/gtaxl_rt5659.c
+@@ -28,6 +28,16 @@
+ #include "i2s.h"
+ #include "../codecs/rt5659.h"
+ 
++/*
++ * ASRC tracking sources.  rt5659.h defines the fields of ASRC_2 and
++ * ASRC_3 but not their values, since mainline never programs them.
++ * 1 = track I2S1.
++ */
++#define RT5659_DA_STO_T_I2S1		(0x1 << RT5659_DA_STO_T_SFT)
++#define RT5659_AD_STO1_T_I2S1		(0x1 << RT5659_AD_STO1_T_SFT)
++#define RT5659_AD_MONO_L_T_I2S1		(0x1 << RT5659_AD_MONO_L_T_SFT)
++#define RT5659_AD_MONO_R_T_I2S1		(0x1 << RT5659_AD_MONO_R_T_SFT)
++
+ #define GTAXL_RFS_48KHZ		512
+ #define GTAXL_BFS_48KHZ		32
+ #define GTAXL_PLL_48KHZ		24576000U
+@@ -128,6 +138,24 @@ static int gtaxl_aif1_hw_params(struct snd_pcm_substream *substream,
+ 		return ret;
+ 	}
+ 
++	/*
++	 * Run the converter filters off the I2S1 clock instead of SYSCLK,
++	 * as the vendor mixer_paths.xml does by setting the four
++	 * "... Clk Sel" controls to clk_i2s1_track.  The rt5659 driver
++	 * gates its ASRC supply widgets on is_using_asrc(), which reads the
++	 * tracking source back from ASRC_2/ASRC_3; mainline never writes
++	 * those two registers, so they stay at 0 (SYSCLK) and the ASRC
++	 * stays off no matter what ASRC_1 contains.  Programmed from
++	 * hw_params(), before the DAPM stream event evaluates
++	 * is_using_asrc(), and through the codec regmap so that it survives
++	 * a cache resync across codec runtime PM.
++	 */
++	snd_soc_component_write(codec_dai->component, RT5659_ASRC_2,
++				RT5659_DA_STO_T_I2S1 | RT5659_AD_STO1_T_I2S1);
++	snd_soc_component_write(codec_dai->component, RT5659_ASRC_3,
++				RT5659_AD_MONO_L_T_I2S1 |
++				RT5659_AD_MONO_R_T_I2S1);
++
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+

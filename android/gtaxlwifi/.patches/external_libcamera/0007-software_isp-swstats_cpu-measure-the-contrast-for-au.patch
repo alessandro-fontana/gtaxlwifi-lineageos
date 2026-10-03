@@ -1,0 +1,166 @@
+From 56f40178c1dd78ce228a4791e7e7dece5afc9f59 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:06:34 +0200
+Subject: [PATCH] software_isp: swstats_cpu: measure the contrast for autofocus
+
+Sum the green differences between neighbouring samples, horizontally and
+vertically, in the central ninth of the frame, with the sum of the
+samples to normalise it. Only for unpacked 10-bit Bayer for now.
+
+---
+ .../internal/software_isp/swisp_stats.h       | 10 +++++
+ src/libcamera/software_isp/swstats_cpu.cpp    | 45 +++++++++++++++++++
+ src/libcamera/software_isp/swstats_cpu.h      | 11 +++++
+ 3 files changed, 66 insertions(+)
+
+diff --git a/include/libcamera/internal/software_isp/swisp_stats.h b/include/libcamera/internal/software_isp/swisp_stats.h
+index ae11f112..cb96fd18 100644
+--- a/include/libcamera/internal/software_isp/swisp_stats.h
++++ b/include/libcamera/internal/software_isp/swisp_stats.h
+@@ -44,6 +44,16 @@ struct SwIspStats {
+ 	 * \brief A histogram of luminance values
+ 	 */
+ 	Histogram yHistogram;
++	/**
++	 * \brief Sum of the green differences between neighbouring samples in
++	 * the focus window, horizontally and vertically (contrast autofocus)
++	 */
++	uint64_t sharpness;
++	/**
++	 * \brief Sum of the green samples in the focus window, to make the
++	 * sharpness independent of the exposure
++	 */
++	uint64_t sharpnessBase;
+ };
+ 
+ } /* namespace libcamera */
+diff --git a/src/libcamera/software_isp/swstats_cpu.cpp b/src/libcamera/software_isp/swstats_cpu.cpp
+index 4b77b360..05b5b91e 100644
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -199,6 +199,9 @@ void SwStatsCpu::statsBGGR10Line0(const uint8_t *src[])
+ 	if (swapLines_)
+ 		std::swap(src0, src1);
+ 
++	const bool focus = currentY_ >= static_cast<unsigned int>(focusWindow_.y) &&
++			   currentY_ < focusWindow_.y + focusWindow_.height;
++
+ 	/* x += 4 sample every other 2x2 block */
+ 	for (unsigned int x = 0; x < window_.width; x += 4) {
+ 		b = src0[x];
+@@ -208,13 +211,45 @@ void SwStatsCpu::statsBGGR10Line0(const uint8_t *src[])
+ 
+ 		g = (g + g2) / 2;
+ 
++		if (focus)
++			focusLine(x, g);
++
+ 		/* divide Y by 4 for 10 -> 8 bpp value */
+ 		SWSTATS_ACCUMULATE_LINE_STATS(4)
+ 	}
+ 
++	if (focus)
++		focusPrevValid_ = true;
++
+ 	SWSTATS_FINISH_LINE_STATS()
+ }
+ 
++/*
++ * Contrast for the autofocus: absolute green differences between a sample
++ * and its left and upper neighbours (4 pixels apart), in the focus window.
++ */
++void SwStatsCpu::focusLine(unsigned int x, unsigned int g)
++{
++	if (x < static_cast<unsigned int>(focusWindow_.x) ||
++	    x >= focusWindow_.x + focusWindow_.width)
++		return;
++
++	unsigned int i = (x - focusWindow_.x) / 4;
++	if (i >= focusPrev_.size())
++		return;
++
++	if (i)
++		stats_.sharpness += std::abs(static_cast<int>(g) -
++					     static_cast<int>(focusLeft_));
++	if (focusPrevValid_)
++		stats_.sharpness += std::abs(static_cast<int>(g) -
++					     static_cast<int>(focusPrev_[i]));
++
++	focusLeft_ = g;
++	focusPrev_[i] = g;
++	stats_.sharpnessBase += g;
++}
++
+ void SwStatsCpu::statsBGGR12Line0(const uint8_t *src[])
+ {
+ 	const uint16_t *src0 = (const uint16_t *)src[1] + window_.x;
+@@ -307,6 +342,9 @@ void SwStatsCpu::startFrame(void)
+ 	stats_.sumB_ = 0;
+ 	stats_.sumG_ = 0;
+ 	stats_.yHistogram.fill(0);
++	stats_.sharpness = 0;
++	stats_.sharpnessBase = 0;
++	focusPrevValid_ = false;
+ }
+ 
+ /**
+@@ -429,6 +467,13 @@ void SwStatsCpu::setWindow(const Rectangle &window)
+ 	window_.width -= xShift_;
+ 	window_.width &= ~(patternSize_.width - 1);
+ 	window_.height &= ~(patternSize_.height - 1);
++
++	/* x and width in multiples of 4: the sampling step of the stats */
++	focusWindow_.x = (window_.width / 3) & ~3u;
++	focusWindow_.y = window_.y + window_.height / 3;
++	focusWindow_.width = (window_.width / 3) & ~3u;
++	focusWindow_.height = window_.height / 3;
++	focusPrev_.assign(focusWindow_.width / 4, 0);
+ }
+ 
+ } /* namespace libcamera */
+diff --git a/src/libcamera/software_isp/swstats_cpu.h b/src/libcamera/software_isp/swstats_cpu.h
+index 26a2f462..2515c1e5 100644
+--- a/src/libcamera/software_isp/swstats_cpu.h
++++ b/src/libcamera/software_isp/swstats_cpu.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <stdint.h>
++#include <vector>
+ 
+ #include <libcamera/base/signal.h>
+ 
+@@ -49,6 +50,7 @@ public:
+ 		    y >= (window_.y + window_.height))
+ 			return;
+ 
++		currentY_ = y;
+ 		(this->*stats0_)(src);
+ 	}
+ 
+@@ -76,6 +78,7 @@ private:
+ 	/* Bayer 10 bpp packed */
+ 	void statsBGGR10PLine0(const uint8_t *src[]);
+ 	void statsGBRG10PLine0(const uint8_t *src[]);
++	void focusLine(unsigned int x, unsigned int g);
+ 
+ 	/* Variables set by configure(), used every line */
+ 	statsProcessFn stats0_;
+@@ -86,6 +89,14 @@ private:
+ 
+ 	Rectangle window_;
+ 
++	/* The focus window, the central ninth of window_ */
++	Rectangle focusWindow_;
++	unsigned int currentY_;
++	unsigned int focusLeft_;
++	/* Green samples of the previous sampled line in the focus window */
++	std::vector<uint16_t> focusPrev_;
++	bool focusPrevValid_;
++
+ 	Size patternSize_;
+ 
+ 	unsigned int xShift_;
+-- 
+2.47.3
+

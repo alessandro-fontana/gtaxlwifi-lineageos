@@ -1,0 +1,37 @@
+From c17cf2a2b9a02cf298352592e711e6f85890f97b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 1 Oct 2026 08:11:09 +0200
+Subject: [PATCH] arm64: dts: exynos7870: disable the core power-down idle
+ state
+
+The system still locks up under load with cores powering down in idle,
+and the release kernel command line had cpuidle.off=1. With the state
+disabled cpuidle-psci runs WFI alone, which takes suspend-to-idle with
+the tick frozen, so the kernel parameter can go.
+
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index f49592a5d0..a4264f63b5 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -139,10 +139,13 @@ idle-states {
+ 			/*
+ 			 * Core power-down. The firmware needs the PMU prepared
+ 			 * by the kernel (exynos-pmu), and the arch timer is
+-			 * lost with the core.
++			 * lost with the core. Disabled: under load the system
++			 * still locks up with it; cpuidle runs WFI alone, which
++			 * also takes suspend-to-idle.
+ 			 */
+ 			cpu_sleep: cpu-sleep {
+ 				compatible = "arm,idle-state";
++				status = "disabled";
+ 				arm,psci-suspend-param = <0x10000>;
+ 				local-timer-stop;
+ 				entry-latency-us = <35>;
+-- 
+2.47.3
+

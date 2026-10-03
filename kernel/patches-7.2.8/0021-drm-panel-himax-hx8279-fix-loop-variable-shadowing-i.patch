@@ -1,0 +1,63 @@
+From 2884b50804675897a7d0d4322835e9529634ae5c Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 15 Aug 2026 14:38:03 +0000
+Subject: [PATCH] drm/panel: himax-hx8279: fix loop variable shadowing in
+ digital gamma
+
+---
+ drivers/gpu/drm/panel/panel-himax-hx8279.c | 20 ++++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-himax-hx8279.c b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+index db9917c416..a87c749355 100644
+--- a/drivers/gpu/drm/panel/panel-himax-hx8279.c
++++ b/drivers/gpu/drm/panel/panel-himax-hx8279.c
+@@ -575,7 +575,7 @@ static void hx8279_set_digital_gamma(struct hx8279 *hx,
+ {
+ 	const struct hx8279_digital_gamma *dgamma = hx->desc->dgamma;
+ 	u8 cmd_set_dig_gamma[2];
+-	int i;
++	int i, j;
+ 
+ 	if (!dgamma)
+ 		return;
+@@ -590,27 +590,27 @@ static void hx8279_set_digital_gamma(struct hx8279 *hx,
+ 
+ 		hx8279_set_page(hx, dsi_ctx, 7 + pg_neg);
+ 
+-		for (i = 0; i < ARRAY_SIZE(dgamma->r); i++) {
+-			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + i;
+-			cmd_set_dig_gamma[1] = dgamma->r[i];
++		for (j = 0; j < ARRAY_SIZE(dgamma->r); j++) {
++			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + j;
++			cmd_set_dig_gamma[1] = dgamma->r[j];
+ 			mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_dig_gamma,
+ 						     ARRAY_SIZE(cmd_set_dig_gamma));
+ 		}
+ 
+ 		hx8279_set_page(hx, dsi_ctx, 8 + pg_neg);
+ 
+-		for (i = 0; i < ARRAY_SIZE(dgamma->g); i++) {
+-			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + i;
+-			cmd_set_dig_gamma[1] = dgamma->g[i];
++		for (j = 0; j < ARRAY_SIZE(dgamma->g); j++) {
++			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + j;
++			cmd_set_dig_gamma[1] = dgamma->g[j];
+ 			mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_dig_gamma,
+ 						     ARRAY_SIZE(cmd_set_dig_gamma));
+ 		}
+ 
+ 		hx8279_set_page(hx, dsi_ctx, 9 + pg_neg);
+ 
+-		for (i = 0; i < ARRAY_SIZE(dgamma->b); i++) {
+-			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + i;
+-			cmd_set_dig_gamma[1] = dgamma->b[i];
++		for (j = 0; j < ARRAY_SIZE(dgamma->b); j++) {
++			cmd_set_dig_gamma[0] = HX8279_PG_DIGITAL_GAMMA + j;
++			cmd_set_dig_gamma[1] = dgamma->b[j];
+ 			mipi_dsi_generic_write_multi(dsi_ctx, cmd_set_dig_gamma,
+ 						     ARRAY_SIZE(cmd_set_dig_gamma));
+ 		}
+-- 
+2.47.3
+

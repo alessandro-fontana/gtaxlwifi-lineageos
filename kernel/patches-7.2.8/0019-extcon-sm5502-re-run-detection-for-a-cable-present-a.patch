@@ -1,0 +1,69 @@
+From 6ec69f2d1c0502a9ffb75d60351b5f9a6b4f057e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 14 Aug 2026 22:00:00 +0000
+Subject: [PATCH] extcon: sm5502: re-run detection for a cable present at boot
+
+The chip decides what a cable is when it is plugged in, writes that into
+DEV_TYPE1, and never measures again.  A cable that was already connected
+when the system started was therefore classified by the bootloader,
+before the USB host had enumerated anything, and a charging downstream
+port comes out recorded as a plain SDP one.
+
+On a Galaxy Tab A (SM-T580) this means booting with the cable in leaves
+DEV_TYPE1 at 0x04 indefinitely.  The extcon device reports SDP, a charger
+driver consuming it settles on the 500 mA limit, and with the screen on
+that does not cover the load: the battery drains on a connected cable
+until somebody unplugs and replugs it by hand.  Unplugging is what makes
+the chip measure again, and it then reports 0x20 - a CDP - and the limit
+rises to 1.5 A.
+
+The delayed work that already exists for exactly this situation runs
+seventeen seconds after probe, long after enumeration, but it only reads
+a decision that was made much earlier.  Reset the chip there so it
+measures the cable afresh, then restore the register configuration,
+which the reset clears along with the interrupt masks.  The attach
+interrupt that follows the reset carries the new classification through
+the normal path.
+
+The vendor driver does the same thing from its own boot-time work, on a
+shorter timer.
+---
+ drivers/extcon/extcon-sm5502.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/extcon/extcon-sm5502.c b/drivers/extcon/extcon-sm5502.c
+index c2a0d94dbc..d6088abea4 100644
+--- a/drivers/extcon/extcon-sm5502.c
++++ b/drivers/extcon/extcon-sm5502.c
+@@ -699,12 +699,28 @@ static irqreturn_t sm5502_muic_irq_handler(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
++static void sm5502_init_dev_type(struct sm5502_muic_info *info);
++
+ static void sm5502_muic_detect_cable_wq(struct work_struct *work)
+ {
+ 	struct sm5502_muic_info *info = container_of(to_delayed_work(work),
+ 				struct sm5502_muic_info, wq_detcable);
+ 	int ret;
+ 
++	/*
++	 * The chip classifies a cable once, when it is plugged in, and never
++	 * revisits that decision.  A cable already present at boot was
++	 * therefore measured by the bootloader, under whatever configuration
++	 * it had left behind, and a charging downstream port can end up
++	 * recorded as a plain SDP one.
++	 *
++	 * Reset the chip so it measures again, now that the host has had time
++	 * to enumerate, and put the configuration back afterwards: the reset
++	 * clears the interrupt masks along with everything else.
++	 */
++	regmap_write(info->regmap, SM5502_REG_RESET, SM5502_REG_RESET_MASK);
++	sm5502_init_dev_type(info);
++
+ 	/* Notify the state of connector cable or not  */
+ 	ret = sm5502_muic_cable_handler(info, true);
+ 	if (ret < 0)
+-- 
+2.47.3
+

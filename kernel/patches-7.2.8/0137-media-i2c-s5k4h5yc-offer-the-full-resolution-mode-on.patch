@@ -1,0 +1,90 @@
+From ee4dfd74e52d02f8ebd5382a661fb28303b7485f Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:51:53 +0200
+Subject: [PATCH] media: i2c: s5k4h5yc: offer the full resolution mode on
+ request only
+
+A software ISP crops rather than scales: a stream wider than the binned
+mode, such as 1080p video, selected the full resolution mode and got a
+1:1 crop of the centre, a narrower field of view, a quarter of the light
+per output pixel and a lower frame rate. Offer only the binned mode
+unless the full_resolution module parameter is set.
+
+---
+ drivers/media/i2c/s5k4h5yc.c | 35 ++++++++++++++++++++++++++---------
+ 1 file changed, 26 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/media/i2c/s5k4h5yc.c b/drivers/media/i2c/s5k4h5yc.c
+index 259d7bfa04..fc333620d0 100644
+--- a/drivers/media/i2c/s5k4h5yc.c
++++ b/drivers/media/i2c/s5k4h5yc.c
+@@ -351,24 +351,41 @@ static const struct reg_sequence s5k4h5yc_1640x1228[] = {
+ 	{ 0x0101, 0x00 },
+ };
+ 
++/* The binned mode first: it is the default, and the only one by default. */
+ static const struct s5k4h5yc_mode s5k4h5yc_modes[] = {
+ 	{
+-		.width = 3280,
+-		.height = 2458,
+-		.llp = 0x0eaa,
+-		.fll = 0x09b2,
+-		.regs = s5k4h5yc_3280x2458,
+-		.num_regs = ARRAY_SIZE(s5k4h5yc_3280x2458),
+-	}, {
+ 		.width = 1640,
+ 		.height = 1228,
+ 		.llp = 0x0e68,
+ 		.fll = 0x09de,
+ 		.regs = s5k4h5yc_1640x1228,
+ 		.num_regs = ARRAY_SIZE(s5k4h5yc_1640x1228),
++	}, {
++		.width = 3280,
++		.height = 2458,
++		.llp = 0x0eaa,
++		.fll = 0x09b2,
++		.regs = s5k4h5yc_3280x2458,
++		.num_regs = ARRAY_SIZE(s5k4h5yc_3280x2458),
+ 	},
+ };
+ 
++/*
++ * The full resolution mode is off by default. A software ISP crops rather
++ * than scales, so any stream wider than the binned mode selects it and gets
++ * a 1:1 crop of the centre: a narrower field of view, a quarter of the
++ * light per output pixel and a slower frame rate, for video in particular.
++ * It is only worth it for a full resolution still capture.
++ */
++static bool full_resolution;
++module_param(full_resolution, bool, 0444);
++MODULE_PARM_DESC(full_resolution, "Offer the 3280x2458 mode (default: off)");
++
++static unsigned int s5k4h5yc_num_modes(void)
++{
++	return full_resolution ? ARRAY_SIZE(s5k4h5yc_modes) : 1;
++}
++
+ static const s64 s5k4h5yc_link_freqs[] = { S5K4H5YC_LINK_FREQ };
+ 
+ static const char * const s5k4h5yc_supply_names[] = {
+@@ -623,7 +640,7 @@ static int s5k4h5yc_enum_frame_size(struct v4l2_subdev *sd,
+ 				    struct v4l2_subdev_state *state,
+ 				    struct v4l2_subdev_frame_size_enum *fse)
+ {
+-	if (fse->index >= ARRAY_SIZE(s5k4h5yc_modes) ||
++	if (fse->index >= s5k4h5yc_num_modes() ||
+ 	    fse->code != S5K4H5YC_MBUS_CODE)
+ 		return -EINVAL;
+ 	fse->min_width = fse->max_width = s5k4h5yc_modes[fse->index].width;
+@@ -640,7 +657,7 @@ static int s5k4h5yc_set_fmt(struct v4l2_subdev *sd,
+ 	int ret;
+ 
+ 	mode = v4l2_find_nearest_size(s5k4h5yc_modes,
+-				      ARRAY_SIZE(s5k4h5yc_modes), width,
++				      s5k4h5yc_num_modes(), width,
+ 				      height, fmt->format.width,
+ 				      fmt->format.height);
+ 	s5k4h5yc_fill_format(mode, &fmt->format);
+-- 
+2.47.3
+

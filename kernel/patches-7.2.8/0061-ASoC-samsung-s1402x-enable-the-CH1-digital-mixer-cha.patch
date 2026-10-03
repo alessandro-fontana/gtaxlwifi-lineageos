@@ -1,0 +1,73 @@
+From 0106f31ffc5dfa7ece55f21e9f4a95edeb8a66a7 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 29 Aug 2026 15:57:53 +0000
+Subject: [PATCH] ASoC: samsung: s1402x: enable the CH1 digital mixer channel
+
+DIG_EN.MIX_EN turns on the digital mixer block, but each mixing
+channel has its own enable bit in DMIX1/DMIX2, and those reset to
+zero.  With CH1 disabled the mixer accepts the AP stream on IN1,
+clocks it in correctly and emits silence on the AMP port, so the
+codec faithfully transmits zeros and nothing is audible anywhere.
+
+The downstream driver does not set this bit in audmixer_init_mixer():
+it is left to the Android HAL, which writes it through the "CH1 Mixer
+En" kcontrol from the route-ap path of mixer_paths.xml.  There is no
+HAL here, so the AP path needs the bit set as part of the static
+configuration.
+
+Verified on gtaxlwifi (SM-T580) by writing 0x08 to the register at
+0x14880040 during playback: the tone becomes audible immediately and
+disappears again when the bit is cleared, reproducibly.
+
+Mixing level LVL1 is left at 0, which is what the vendor uses for a
+single active channel.
+---
+ sound/soc/samsung/s1402x.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/sound/soc/samsung/s1402x.c b/sound/soc/samsung/s1402x.c
+index 73e7598305..9b70a67704 100644
+--- a/sound/soc/samsung/s1402x.c
++++ b/sound/soc/samsung/s1402x.c
+@@ -49,6 +49,8 @@
+ #define S1402X_0C_SLOT_R		0x30
+ #define S1402X_0E_TSLOT			0x38
+ #define S1402X_0F_DIG_EN		0x3c
++#define S1402X_10_DMIX1			0x40
++#define S1402X_11_DMIX2			0x44
+ #define S1402X_18_INAMP_CTL		0x60
+ #define S1402X_19_OUTAP1_CTL		0x64
+ #define S1402X_1A_OUTCP1_CTL		0x68
+@@ -99,6 +101,14 @@
+ /* S1402X_0F_DIG_EN */
+ #define DIG_EN_MIX_EN			BIT(3)
+ 
++/* S1402X_10_DMIX1 */
++#define DMIX1_MIX_EN2			BIT(7)
++#define DMIX1_MIX_LVL2_SHIFT		4
++#define DMIX1_MIX_LVL2_MASK		0x7
++#define DMIX1_MIX_EN1			BIT(3)
++#define DMIX1_MIX_LVL1_SHIFT		0
++#define DMIX1_MIX_LVL1_MASK		0x7
++
+ /* S1402X_18_INAMP_CTL (return path codec -> mixer, 64fs 24bit) */
+ #define INAMP_CTL_LRCLK_POL_SHIFT	7
+ #define INAMP_CTL_BCK_POL_SHIFT		6
+@@ -189,6 +199,14 @@ static void s1402x_init(struct s1402x_priv *priv)
+ 	regmap_write(priv->regmap, S1402X_0A_HQ_CTL, HQ_CTL_MCKO_EN);
+ 	regmap_write(priv->regmap, S1402X_0F_DIG_EN, DIG_EN_MIX_EN);
+ 
++	/*
++	 * Enable mixing channel 1, which carries the AP stream.  MIX_EN
++	 * in DIG_EN only gates the mixer block as a whole; without this
++	 * bit the AMP port carries silence.  The mixing level is left at
++	 * 0, as used downstream when a single channel is active.
++	 */
++	regmap_write(priv->regmap, S1402X_10_DMIX1, DMIX1_MIX_EN1);
++
+ 	s1402x_reset_data(priv);
+ }
+ 
+-- 
+2.47.3
+

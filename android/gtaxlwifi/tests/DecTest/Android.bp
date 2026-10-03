@@ -1,0 +1,26 @@
+//
+// SPDX-FileCopyrightText: 2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+// Video decoder test (§75): decodes the first video track of a file with
+// MediaCodec (codec chosen by type or by name) and writes the frames as I420
+// to compare with ffmpeg on the host. To buffers, or with DEC_SURFACE=1 to
+// the Surface of an AImageReader, the path video players take.
+// Not part of any image: build it with `m gtaxl-dectest` and copy it to
+// /data/local/tmp.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "gtaxl-dectest",
+    srcs: ["dectest.cpp"],
+    shared_libs: [
+        "libbinder_ndk",
+        "libmediandk",
+        "liblog",
+        "libnativewindow",
+    ],
+    cflags: ["-Wall", "-Werror"],
+}
