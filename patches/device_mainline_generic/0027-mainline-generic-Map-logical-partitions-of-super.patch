@@ -1,0 +1,100 @@
+From 906f7075d6cb86b37f0917efee0d402e11439cae Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 27/33] mainline/generic: Map logical partitions of super
+
+When generic_init finds a GPT partition named "super", map the logical
+partitions described by its liblp metadata with dm-linear. The
+resulting dm devices are then probed like any other block device.
+
+Assisted-by: LLM
+Change-Id: I9389f49d19e72f0a7c283d60395bf259763ed964
+---
+ services/generic_init/Android.bp        |  2 ++
+ services/generic_init/mount_handler.cpp | 37 +++++++++++++++++++++++++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/services/generic_init/Android.bp b/services/generic_init/Android.bp
+index 2ac3834..96fc23b 100644
+--- a/services/generic_init/Android.bp
++++ b/services/generic_init/Android.bp
+@@ -57,6 +57,8 @@ cc_defaults {
+         "libfs_avb",
+         "libgsi",
+         "liblp",
++        // liblp reads the size of super with get_block_device_size()
++        "libext4_utils",
+     ],
+ 
+     cflags: [
+diff --git a/services/generic_init/mount_handler.cpp b/services/generic_init/mount_handler.cpp
+index 8abfea6..8e3bccc 100644
+--- a/services/generic_init/mount_handler.cpp
++++ b/services/generic_init/mount_handler.cpp
+@@ -13,9 +13,13 @@
+ #include <android-base/strings.h>
+ #include <android-base/unique_fd.h>
+ #include <fs_mgr.h>
++#include <fs_mgr_dm_linear.h>
+ #include <fstab/fstab.h>
+ #include <libdm/loop_control.h>
++#include <liblp/liblp.h>
+ #include <linux/loop.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
+ #include <sys/ioctl.h>
+ #include <sys/mount.h>
+ #include <unistd.h>
+@@ -679,16 +683,49 @@ void OnPreBlockDevices(void) {
+     ParseConfig();
+ }
+ 
++// Logical partitions of a "super" GPT partition are mapped with dm-linear;
++// the resulting dm devices are then probed like any other block device.
++static bool super_mapped = false;
++
++static void MapSuperPartition(const std::string& devpath) {
++    // The dm control node may not exist yet during coldboot, and libdm only
++    // opens it once.
++    static const char kDmControl[] = "/dev/device-mapper";
++    if (access(kDmControl, F_OK) != 0 &&
++        mknod(kDmControl, S_IFCHR | 0600, makedev(10, 236)) != 0) {
++        PLOG(ERROR) << "super: cannot create " << kDmControl;
++        return;
++    }
++    auto metadata = ReadMetadata(devpath, 0);
++    if (!metadata) {
++        LOG(ERROR) << "super: no logical partition metadata on " << devpath;
++        return;
++    }
++    if (!CreateLogicalPartitions(*metadata, devpath)) {
++        LOG(ERROR) << "super: failed to map the logical partitions of " << devpath;
++        return;
++    }
++    super_mapped = true;
++    LOG(INFO) << "super: logical partitions of " << devpath << " mapped";
++}
++
+ void OnBlockDeviceAdd(const android::init::Uevent& uevent, const std::string& devpath, const std::vector<std::string>& links) {
+     if (block_devices->contains(devpath)) {
+         LOG(ERROR) << "Block device " << devpath << " has already been parsed";
+         return;
+     }
+ 
++    if (uevent.partition_name == "super") {
++        if (!super_mapped) MapSuperPartition(devpath);
++        return;
++    }
++
+     static const std::list<std::string> kIgnoredDevnamePrefixs = {
+         "dm-", "loop", "ram", "zram"
+     };
+     for (const auto& prefix : kIgnoredDevnamePrefixs) {
++        // dm devices are ours once super has been mapped
++        if (prefix == "dm-" && super_mapped) continue;
+         if (StartsWith(uevent.device_name, prefix)) {
+             return;
+         }
+-- 
+2.47.3
+

@@ -1,0 +1,79 @@
+From cfa8c4b695532e0f8db671695fe67cb95f12b5b5 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 05/33] mainline/generic: Make modprobe_kernel optional
+
+Pointing kernel.modprobe at /vendor/bin/modprobe_kernel makes the kernel
+execute a vendor binary for every module request, which SELinux denies
+in enforcing mode. Add TARGET_GENERIC_KERNEL_MODPROBE (default true) and
+move the write into the helper's own init script, so that devices whose
+modules are all loaded by init can keep the AOSP default, with
+request_module() disabled.
+
+Assisted-by: LLM
+Change-Id: Ic934fae11c7ba7893d93e6c43047569543e1b9d3
+---
+ configs/init/init.generic.rc                | 4 ----
+ device.mk                                   | 5 +++++
+ services/modprobe_kernel/Android.bp         | 1 +
+ services/modprobe_kernel/modprobe_kernel.rc | 3 +++
+ 4 files changed, 9 insertions(+), 4 deletions(-)
+ create mode 100644 services/modprobe_kernel/modprobe_kernel.rc
+
+diff --git a/configs/init/init.generic.rc b/configs/init/init.generic.rc
+index 2367cd2..94af7d4 100644
+--- a/configs/init/init.generic.rc
++++ b/configs/init/init.generic.rc
+@@ -66,10 +66,6 @@ service vendor.light-default /vendor/bin/hw/android.hardware.light-service.linea
+ on early-init
+     exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules zram.ko
+ 
+-on init
+-    # Undo the override from system init.rc
+-    write /proc/sys/kernel/modprobe /vendor/bin/modprobe_kernel
+-
+ # Mount
+ on init
+     trigger firmware_mounts_complete
+diff --git a/device.mk b/device.mk
+index f84b99e..d9d6b29 100644
+--- a/device.mk
++++ b/device.mk
+@@ -166,8 +166,13 @@ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/configs/modprobe/modules.options:$(TARGET_COPY_OUT_RAMDISK)/lib/modules/modules.options \
+     $(DEVICE_PATH)/configs/modprobe/modules.options:$(TARGET_COPY_OUT_VENDOR_DLKM)/lib/modules/modules.options
+ 
++# Devices whose modules are all loaded by init can set this to false, which
++# keeps the AOSP default of request_module() disabled.
++TARGET_GENERIC_KERNEL_MODPROBE ?= true
++ifeq ($(TARGET_GENERIC_KERNEL_MODPROBE),true)
+ PRODUCT_PACKAGES += \
+     modprobe_kernel
++endif
+ 
+ # Overlays
+ DEVICE_PACKAGE_OVERLAYS += \
+diff --git a/services/modprobe_kernel/Android.bp b/services/modprobe_kernel/Android.bp
+index 94a2b35..eb0bc37 100644
+--- a/services/modprobe_kernel/Android.bp
++++ b/services/modprobe_kernel/Android.bp
+@@ -1,6 +1,7 @@
+ cc_binary {
+     name: "modprobe_kernel",
+     srcs: ["modprobe.cpp"],
++    init_rc: ["modprobe_kernel.rc"],
+     static_libs: [
+         "libmodprobe",
+     ],
+diff --git a/services/modprobe_kernel/modprobe_kernel.rc b/services/modprobe_kernel/modprobe_kernel.rc
+new file mode 100644
+index 0000000..cffcad1
+--- /dev/null
++++ b/services/modprobe_kernel/modprobe_kernel.rc
+@@ -0,0 +1,3 @@
++on init
++    # Undo the override from system init.rc
++    write /proc/sys/kernel/modprobe /vendor/bin/modprobe_kernel
+-- 
+2.47.3
+

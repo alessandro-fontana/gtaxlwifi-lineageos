@@ -1,0 +1,38 @@
+From 064bd8cddcb6e2af8a930e9ba6f96c3308b57b6c Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 15/33] mainline/generic: Dontaudit unset property reads
+
+surfaceflinger, audioserver and the graphics HALs read properties that
+are never set and have no context. The read returns the default value
+either way.
+
+Assisted-by: LLM
+Change-Id: Id17a402b3560ba13ab8179f5699874db19684b0d
+---
+ sepolicy/private/dontaudit.te | 2 ++
+ sepolicy/vendor/hal_sysfs.te  | 2 ++
+ 2 files changed, 4 insertions(+)
+ create mode 100644 sepolicy/vendor/hal_sysfs.te
+
+diff --git a/sepolicy/private/dontaudit.te b/sepolicy/private/dontaudit.te
+index a9d543a..b1728e2 100644
+--- a/sepolicy/private/dontaudit.te
++++ b/sepolicy/private/dontaudit.te
+@@ -3,3 +3,5 @@ dontaudit storaged sysfs:file r_file_perms;
+ # kdevtmpfs works on its own devtmpfs, which is not mounted: /dev is a tmpfs.
+ dontaudit kernel device:dir { write add_name remove_name };
+ dontaudit kernel device:blk_file { create setattr unlink };
++# Unset properties without a context (vendor.display.*, persist.vendor.audio.*).
++dontaudit { surfaceflinger audioserver } vendor_default_prop:file { getattr open read map };
+diff --git a/sepolicy/vendor/hal_sysfs.te b/sepolicy/vendor/hal_sysfs.te
+new file mode 100644
+index 0000000..df5f00b
+--- /dev/null
++++ b/sepolicy/vendor/hal_sysfs.te
+@@ -0,0 +1,2 @@
++# Unset persist.device_config.* flags without a context
++dontaudit { hal_graphics_allocator_default hal_graphics_composer_default } default_prop:file { getattr open read map };
+-- 
+2.47.3
+

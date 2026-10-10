@@ -1,0 +1,85 @@
+From 158b0347ab8fb6ebd09e17993d60720a3791f073 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:42 +0200
+Subject: [PATCH 2/3] hwui: Optionally skip layer for uniform stretch
+
+With UniformScale the stretch is a matrix concat applied while drawing
+the node, yet requiresLayer() still promotes the node to a full-size
+RenderLayer that is re-rendered on every frame of the spring. Add
+debug.hwui.stretch_uniform_skips_layer to skip that layer.
+
+Assisted-by: LLM
+Change-Id: I0e6f99fefe4e20f95d46b920433d62a77e1f75a1
+---
+ libs/hwui/Properties.cpp          | 3 +++
+ libs/hwui/Properties.h            | 8 ++++++++
+ libs/hwui/effects/StretchEffect.h | 6 ++++++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/libs/hwui/Properties.cpp b/libs/hwui/Properties.cpp
+index a0f25a8f2..ec84bbc95 100644
+--- a/libs/hwui/Properties.cpp
++++ b/libs/hwui/Properties.cpp
+@@ -108,6 +108,7 @@ bool Properties::isForceInvertEnabled = false;
+ float Properties::maxHdrHeadroomOn8bit = 5.f;  // TODO: Refine this number
+ 
+ bool Properties::clipSurfaceViews = false;
++bool Properties::stretchUniformSkipsLayer = false;
+ bool Properties::hdr10bitPlus = false;
+ bool Properties::skipTelemetry = false;
+ 
+@@ -211,6 +212,8 @@ bool Properties::load() {
+     clipSurfaceViews =
+             base::GetBoolProperty("debug.hwui.clip_surfaceviews", hwui_flags::clip_surfaceviews());
+     hdr10bitPlus = hwui_flags::hdr_10bit_plus();
++    stretchUniformSkipsLayer =
++            base::GetBoolProperty(PROPERTY_STRETCH_UNIFORM_SKIPS_LAYER, false);
+ 
+     timeoutMultiplier = android::base::GetIntProperty("ro.hw_timeout_multiplier", 1);
+     skipTelemetry = base::GetBoolProperty(PROPERTY_SKIP_EGLMANAGER_TELEMETRY,
+diff --git a/libs/hwui/Properties.h b/libs/hwui/Properties.h
+index 854d7b385..ef0b9b65a 100644
+--- a/libs/hwui/Properties.h
++++ b/libs/hwui/Properties.h
+@@ -147,6 +147,13 @@ enum DebugLevel {
+  */
+ #define PROPERTY_STRETCH_EFFECT_BEHAVIOR "debug.hwui.stretch_effect_behavior"
+ 
++/**
++ * When true and the stretch effect behavior is "uniform_scale", a stretched
++ * node is not promoted to a layer: the scale is applied while drawing it.
++ * Read at process start.
++ */
++#define PROPERTY_STRETCH_UNIFORM_SKIPS_LAYER "debug.hwui.stretch_uniform_skips_layer"
++
+ /**
+  * Allows to collect a recording of Skia drawing commands.
+  */
+@@ -364,6 +371,7 @@ public:
+     static float maxHdrHeadroomOn8bit;
+ 
+     static bool clipSurfaceViews;
++    static bool stretchUniformSkipsLayer;
+     static bool hdr10bitPlus;
+     static bool skipTelemetry;
+ 
+diff --git a/libs/hwui/effects/StretchEffect.h b/libs/hwui/effects/StretchEffect.h
+index 7eb640447..2635ad6f4 100644
+--- a/libs/hwui/effects/StretchEffect.h
++++ b/libs/hwui/effects/StretchEffect.h
+@@ -108,6 +108,12 @@ public:
+     }
+ 
+     bool requiresLayer() const {
++        // UniformScale is a matrix concat on the drawing canvas; a layer
++        // would only add a render target and a copy per frame.
++        if (Properties::stretchUniformSkipsLayer &&
++            Properties::getStretchEffectBehavior() == StretchEffectBehavior::UniformScale) {
++            return false;
++        }
+         return !isEmpty();
+     }
+ 
+-- 
+2.47.3
+

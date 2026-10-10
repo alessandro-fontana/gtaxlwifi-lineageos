@@ -1,0 +1,30 @@
+From 605ac2d7ae22e9c47658b7b17ee25086da4a2d1f Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:09:00 +0200
+Subject: [PATCH 2/2] LINEAGE: android: Use pkg-config key in cross file
+
+Meson 1.3 deprecated the `pkgconfig` entry of [binaries] in favour of
+`pkg-config`.
+
+Assisted-by: LLM
+Change-Id: Id4f7698f45de0193eca76ab42d18de389684c891
+---
+ android/mesa3d_cross.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/android/mesa3d_cross.mk b/android/mesa3d_cross.mk
+index c3dec2e..077ea7b 100644
+--- a/android/mesa3d_cross.mk
++++ b/android/mesa3d_cross.mk
+@@ -259,7 +259,7 @@ $(MESON_GEN_FILES_TARGET): $(sort $(shell find -L $(MESA3D_TOP) -not -path '*/\.
+ 		"cpp = [$(foreach arg,$(PRIVATE_CXX),'$(subst prebuilts/,$(AOSP_ABSOLUTE_PATH)/prebuilts/,$(arg))',)'']\n"        \
+ 		"c_ld = 'lld'\n"                                                                                                  \
+ 		"cpp_ld = 'lld'\n\n"                                                                                              \
+-		"pkgconfig = ['env', 'PKG_CONFIG_LIBDIR=' + '$(call relative-to-absolute,$(MESON_GEN_DIR))', '/usr/bin/pkg-config']\n\n" \
++		"pkg-config = ['env', 'PKG_CONFIG_LIBDIR=' + '$(call relative-to-absolute,$(MESON_GEN_DIR))', '/usr/bin/pkg-config']\n\n" \
+ 		"llvm-config = '/dev/null'\n"                                                                                     \
+ 		"[host_machine]\n"                                                                                                \
+ 		"system = 'android'\n"                                                                                              \
+-- 
+2.47.3
+

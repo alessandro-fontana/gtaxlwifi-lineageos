@@ -1,0 +1,74 @@
+From c5811e6591447d0bfd705c3526607d1859a929fc Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:16:10 +0200
+Subject: [PATCH 10/31] android: hal: Close each release fence exactly once
+
+freeReleaseFences() closed the fds of handles obtained with
+makeFromAidl(), which does not dup them. The AIDL NativeHandles closed
+them again when the results were destroyed, the second time closing
+whatever descriptor had reused the number in the meantime, which
+showed up as 'Could not close FD' errors from libcamera.
+
+Let the NativeHandles own the dups, and close the fence handed over by
+the HAL once it has been duplicated.
+
+Assisted-by: LLM
+---
+ .../hal/device/LibcameraDeviceSession.cpp     | 25 +++++++++----------
+ 1 file changed, 12 insertions(+), 13 deletions(-)
+
+diff --git a/src/android/hal/device/LibcameraDeviceSession.cpp b/src/android/hal/device/LibcameraDeviceSession.cpp
+index aefdc6fd..a1d7d573 100644
+--- a/src/android/hal/device/LibcameraDeviceSession.cpp
++++ b/src/android/hal/device/LibcameraDeviceSession.cpp
+@@ -501,21 +501,17 @@ void LibcameraDeviceSession::ResultBatcher::sendBatchShutterCbsLocked(
+ }
+ 
+ void LibcameraDeviceSession::ResultBatcher::freeReleaseFences(std::vector<CaptureResult>& results) {
++    /*
++     * The release fences are dups owned by the AIDL NativeHandles, which
++     * close them when the results are destroyed. makeFromAidl() does not
++     * dup: closing its handles here would close each fd twice, the second
++     * time whatever descriptor has reused the number in the meantime.
++     */
+     for (auto& result : results) {
+-        native_handle_t* handle = makeFromAidl(result.inputBuffer.releaseFence);
+-        if (handle != nullptr) {
+-            native_handle_close(handle);
+-            native_handle_delete(handle);
+-        }
+-        for (auto& buf : result.outputBuffers) {
+-            native_handle_t* resultFence = makeFromAidl(buf.releaseFence);
+-            if (resultFence != nullptr) {
+-                native_handle_close(resultFence);
+-                native_handle_delete(resultFence);
+-            }
+-        }
++        result.inputBuffer.releaseFence = NativeHandle();
++        for (auto& buf : result.outputBuffers)
++            buf.releaseFence = NativeHandle();
+     }
+-    return;
+ }
+ 
+ void LibcameraDeviceSession::ResultBatcher::moveStreamBuffer(StreamBuffer&& src, StreamBuffer& dst) {
+@@ -1447,6 +1443,7 @@ status_t LibcameraDeviceSession::constructCaptureResult(CaptureResult& result,
+             native_handle_t* handle = native_handle_create(/*numFds*/1, /*numInts*/0);
+             handle->data[0] = hal_result->input_buffer->release_fence;
+             result.inputBuffer.releaseFence = android::dupToAidl(handle);
++            native_handle_close(handle);
+             native_handle_delete(handle);
+         } else {
+             result.inputBuffer.releaseFence = NativeHandle();
+@@ -1474,6 +1471,8 @@ status_t LibcameraDeviceSession::constructCaptureResult(CaptureResult& result,
+             native_handle_t* handle = native_handle_create(/*numFds*/1, /*numInts*/0);
+             handle->data[0] = hal_result->output_buffers[i].release_fence;
+             result.outputBuffers[i].releaseFence = android::dupToAidl(handle);
++            /* The HAL handed the fence over: the AIDL handle holds a dup. */
++            native_handle_close(handle);
+             native_handle_delete(handle);
+         } else {
+             result.outputBuffers[i].releaseFence = NativeHandle();
+-- 
+2.47.3
+

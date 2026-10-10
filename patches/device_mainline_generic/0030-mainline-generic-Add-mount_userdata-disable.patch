@@ -1,0 +1,42 @@
+From 79b55a3fa06858a1714ea6cc6c6950d452e2cd0f Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 30/33] mainline/generic: Add mount_userdata=disable
+
+Let the second stage init mount userdata from the device fstab. This is
+required for file-based encryption: fs_mgr_mount_all() skips entries
+flagged first_stage_mount, and only it sets ro.crypto.state and
+ro.crypto.type.
+
+Assisted-by: LLM
+Change-Id: Ic7098b44263f7dae4f695e182229ca9fea748db6
+---
+ services/generic_init/mount_handler.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/services/generic_init/mount_handler.cpp b/services/generic_init/mount_handler.cpp
+index 7357645..61f940f 100644
+--- a/services/generic_init/mount_handler.cpp
++++ b/services/generic_init/mount_handler.cpp
+@@ -196,6 +196,9 @@ enum class MountUserdataParam {
+     IMAGES = 1,
+     BIND_MOUNT_DIR = 2,
+     TMPFS = 3,
++    // Leave userdata to the second stage init: it must mount it itself for
++    // file-based encryption, since only fs_mgr_mount_all() sets ro.crypto.*.
++    DISABLE = 4,
+ };
+ 
+ const std::unordered_map<std::string, MountFirmwareParam> kStringToMountFirmwareParamMap = {
+@@ -222,6 +225,8 @@ const std::unordered_map<std::string, MountUserdataParam> kStringToMountUserdata
+     {"imgs", MountUserdataParam::IMAGES},
+     {"bind_mount_dir", MountUserdataParam::BIND_MOUNT_DIR},
+     {"tmpfs", MountUserdataParam::TMPFS},
++    {"disable", MountUserdataParam::DISABLE},
++    {"false", MountUserdataParam::DISABLE},
+ };
+ 
+ MountFirmwareParam param_mount_firmware = MountFirmwareParam::ALL_POSSIBLE_DIRS;
+-- 
+2.47.3
+

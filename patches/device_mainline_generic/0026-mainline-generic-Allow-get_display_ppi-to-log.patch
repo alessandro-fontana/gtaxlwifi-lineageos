@@ -1,0 +1,26 @@
+From 255d5aaf30dc3634863efdbca00a48b9e6957dfd Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 26/33] mainline/generic: Allow get_display_ppi to log
+
+get_display_ppi logs to /dev/kmsg.
+
+Assisted-by: LLM
+Change-Id: I7046acd7e846477a58a8e800df1c12560973b9a2
+---
+ sepolicy/vendor/vendor_get_display_ppi.te | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sepolicy/vendor/vendor_get_display_ppi.te b/sepolicy/vendor/vendor_get_display_ppi.te
+index d8463b8..c64f875 100644
+--- a/sepolicy/vendor/vendor_get_display_ppi.te
++++ b/sepolicy/vendor/vendor_get_display_ppi.te
+@@ -6,4 +6,5 @@ init_daemon_domain(vendor_get_display_ppi);
+ get_prop(vendor_get_display_ppi, vendor_hwc_drm_prop)
+ set_prop(vendor_get_display_ppi, vendor_get_display_ppi_prop)
+ 
++allow vendor_get_display_ppi kmsg_device:chr_file w_file_perms;
+ r_dir_file(vendor_get_display_ppi, sysfs_gpu)
+-- 
+2.47.3
+

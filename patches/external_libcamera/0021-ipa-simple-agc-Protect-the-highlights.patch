@@ -1,0 +1,115 @@
+From c436bbd91768dea26bc3d2f478bde5e866a7e665 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:22:35 +0200
+Subject: [PATCH 21/31] ipa: simple: agc: Protect the highlights
+
+The MSV target is a mean: against the light, the shade sets it and the
+sunlit background burns out. Lower the exposure when more than 4% of
+the pixels are saturated, as long as the MSV stays above 1.6, and only
+allow it to go up again below 2%.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/agc.cpp | 36 +++++++++++++++++++++++++++----
+ src/ipa/simple/algorithms/agc.h   |  3 ++-
+ 2 files changed, 34 insertions(+), 5 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index 47376872..edf4feb2 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <numeric>
+ #include <stdint.h>
+ 
+ #include <libcamera/base/log.h>
+@@ -39,6 +40,15 @@ static constexpr float kExposureOptimal = kExposureBinsCount / 2.0;
+  */
+ static constexpr float kExposureSatisfactory = 0.2;
+ 
++/*
++ * Highlight protection: above kSaturatedMax of burnt pixels the exposure
++ * goes down, as long as the MSV stays above kExposureMSVMin; below
++ * kSaturatedMin it may go up again. The gap is the hysteresis.
++ */
++static constexpr double kSaturatedMax = 0.04;
++static constexpr double kSaturatedMin = 0.02;
++static constexpr float kExposureMSVMin = 1.6;
++
+ /*
+  * Frames to wait at most for a change to show in the sensor controls
+  * reported for a frame, before deciding again anyway.
+@@ -58,7 +68,8 @@ int Agc::configure([[maybe_unused]] IPAContext &context,
+ 	return 0;
+ }
+ 
+-void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
++void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
++			 double exposureMSV, double saturated)
+ {
+ 	const auto &agc = context.configuration.agc;
+ 	int32_t &exposure = frameContext.sensor.exposure;
+@@ -82,7 +93,17 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 		pending_ = false;
+ 	}
+ 
+-	if (std::abs(exposureMSV - kExposureOptimal) <= kExposureSatisfactory)
++	/*
++	 * The MSV is a mean: against the light the shade sets it, and the
++	 * sunlit background burns out. Burnt highlights count as too much
++	 * light unless the rest would get too dark, and more light is not
++	 * asked for while they are already at the limit.
++	 */
++	bool over = exposureMSV > kExposureOptimal + kExposureSatisfactory ||
++		    (saturated > kSaturatedMax && exposureMSV > kExposureMSVMin);
++	bool under = exposureMSV < kExposureOptimal - kExposureSatisfactory &&
++		     saturated < kSaturatedMin;
++	if (!over && !under)
+ 		return;
+ 
+ 	/*
+@@ -92,7 +113,9 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 	 * largest step.
+ 	 */
+ 	double factor;
+-	if (exposureMSV >= kExposureBinsCount - 0.5)
++	if (over && exposureMSV <= kExposureOptimal + kExposureSatisfactory)
++		factor = 0.85;
++	else if (exposureMSV >= kExposureBinsCount - 0.5)
+ 		factor = 0.5;
+ 	else if (exposureMSV <= 1.2)
+ 		factor = 2.0;
+@@ -160,7 +183,12 @@ void Agc::process(IPAContext &context,
+ 	}
+ 
+ 	float exposureMSV = (denom == 0 ? 0 : static_cast<float>(num) / denom);
+-	updateExposure(context, frameContext, exposureMSV);
++
++	/* The share of burnt pixels: the top entry of the histogram. */
++	const unsigned int total = std::accumulate(histogram.begin(), histogram.end(), 0u);
++	double saturated = total ? static_cast<double>(histogram[SwIspStats::kYHistogramSize - 1]) / total : 0;
++
++	updateExposure(context, frameContext, exposureMSV, saturated);
+ }
+ 
+ REGISTER_IPA_ALGORITHM(Agc, "Agc")
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 15082865..f1a64bf8 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -26,7 +26,8 @@ public:
+ 		     ControlList &metadata) override;
+ 
+ private:
+-	void updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV);
++	void updateExposure(IPAContext &context, IPAFrameContext &frameContext,
++			    double exposureMSV, double saturated);
+ 
+ 	/* The last exposure and gain asked for, and frames spent waiting for them. */
+ 	bool pending_;
+-- 
+2.47.3
+

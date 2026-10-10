@@ -1,0 +1,159 @@
+From a042184e3976f76625f582856d14b3ed365e6dc8 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 18:15:01 +0200
+Subject: [PATCH 28/31] ipa: simple: agc: Avoid mains flicker banding
+
+Lamps on 50 Hz mains flicker at 100 Hz, and with an exposure time that
+is not a multiple of 10 ms the flicker shows as bands rolling through
+the image.
+
+When the exposure time is longer than the flicker period, round it
+down to a multiple of the period and make up the rest with the
+analogue gain, unless the gain would run out, as banding is better
+than a dark image. The period comes from the tuning file
+(flickerPeriod, in microseconds, 10000 by default, 0 to disable).
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/agc.cpp | 61 ++++++++++++++++++++++---------
+ src/ipa/simple/algorithms/agc.h   |  4 ++
+ 2 files changed, 48 insertions(+), 17 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index cad3799f..85ebc313 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -20,6 +20,8 @@ namespace libcamera {
+ 
+ LOG_DEFINE_CATEGORY(IPASoftExposure)
+ 
++using namespace std::literals::chrono_literals;
++
+ namespace ipa::soft::algorithms {
+ 
+ /*
+@@ -55,6 +57,12 @@ static constexpr float kExposureMSVMinDefault = 1.6;
+  */
+ static constexpr unsigned int kMaxWait = 8;
+ 
++/*
++ * Lamps on 50 Hz mains flicker at 100 Hz: an exposure that is not a
++ * multiple of 10 ms shows it as bands rolling through the image.
++ */
++static constexpr unsigned int kFlickerPeriodDefault = 10000;
++
+ Agc::Agc()
+ 	: pending_(false), exposureReq_(0), gainReq_(0), waited_(0),
+ 	  target_(kExposureOptimal), msvMin_(kExposureMSVMinDefault),
+@@ -69,9 +77,37 @@ int Agc::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData
+ 	saturatedMax_ = tuningData["saturatedMax"].get<double>(kSaturatedMaxDefault);
+ 	saturatedMin_ = saturatedMax_ / 2;
+ 	binningGain_ = tuningData["binningGain"].get<double>(1.0);
++	flickerPeriod_ = tuningData["flickerPeriod"].get<unsigned int>(kFlickerPeriodDefault) * 1us;
+ 	return 0;
+ }
+ 
++/*
++ * Split the product of exposure (in lines) and gain into the two: exposure
++ * first, gain only for what the exposure cannot give. Longer than the
++ * flicker period, the exposure goes down to a multiple of it and the gain
++ * makes up the rest, unless the gain would run out: then banding is
++ * better than a dark image.
++ */
++void Agc::split(const IPAContext &context, double total,
++		int32_t &exposure, double &gain) const
++{
++	const auto &agc = context.configuration.agc;
++
++	exposure = std::clamp(static_cast<int32_t>(std::lround(total / agc.againMin)),
++			      agc.exposureMin, agc.exposureMax);
++
++	utils::Duration time = exposure * agc.lineDuration;
++	if (flickerPeriod_ > 0us && time >= flickerPeriod_) {
++		double periods = std::floor(time / flickerPeriod_);
++		int32_t lines = std::max(static_cast<int32_t>(periods * (flickerPeriod_ / agc.lineDuration)),
++					 agc.exposureMin);
++		if (total / lines <= agc.againMax)
++			exposure = lines;
++	}
++
++	gain = std::clamp(total / exposure, agc.againMin, agc.againMax);
++}
++
+ int Agc::configure(IPAContext &context, const IPAConfigInfo &configInfo)
+ {
+ 	pending_ = false;
+@@ -107,20 +143,13 @@ int Agc::configure(IPAContext &context, const IPAConfigInfo &configInfo)
+ 		       std::pow(binningGain_, std::log2(static_cast<double>(from) / agc.bin));
+ 	}
+ 
+-	if (gain > cfg.againMax) {
+-		time = time * (gain / cfg.againMax);
+-		gain = cfg.againMax;
+-	} else if (gain < cfg.againMin) {
+-		time = time * (gain / cfg.againMin);
+-		gain = cfg.againMin;
+-	}
+-
+-	int32_t lines = std::clamp(static_cast<int32_t>(std::lround(time / cfg.lineDuration)),
+-				   cfg.exposureMin, cfg.exposureMax);
+-	if (lines == cfg.exposureMax && time > lines * cfg.lineDuration)
++	double total = time / cfg.lineDuration * gain;
++	int32_t lines;
++	split(context, total, lines, gain);
++	if (lines * gain < total * 0.99)
+ 		LOG(IPASoftExposure, Info)
+ 			<< "Mode " << agc.bin << "x underexposed by "
+-			<< time / (lines * cfg.lineDuration);
++			<< total / (lines * gain);
+ 
+ 	agc.initialExposure = lines;
+ 	agc.initialGain = gain;
+@@ -136,7 +165,6 @@ int Agc::configure(IPAContext &context, const IPAConfigInfo &configInfo)
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 			 double exposureMSV, double saturated)
+ {
+-	const auto &agc = context.configuration.agc;
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
+ 
+@@ -187,11 +215,10 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	else
+ 		factor = std::clamp(std::sqrt(target_ / exposureMSV), 0.6, 1.6);
+ 
+-	/* Exposure first, gain only for what the exposure cannot give. */
+ 	double total = exposure * again * factor;
+-	int32_t nextExposure = std::clamp(static_cast<int32_t>(std::lround(total / agc.againMin)),
+-					  agc.exposureMin, agc.exposureMax);
+-	double nextGain = std::clamp(total / nextExposure, agc.againMin, agc.againMax);
++	int32_t nextExposure;
++	double nextGain;
++	split(context, total, nextExposure, nextGain);
+ 
+ 	LOG(IPASoftExposure, Debug)
+ 		<< "exposureMSV " << exposureMSV << " factor " << factor
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 81ea9845..ceb5e44c 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -29,6 +29,8 @@ public:
+ private:
+ 	void updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 			    double exposureMSV, double saturated);
++	void split(const IPAContext &context, double total,
++		   int32_t &exposure, double &gain) const;
+ 
+ 	/* The last exposure and gain asked for, and frames spent waiting for them. */
+ 	bool pending_;
+@@ -43,6 +45,8 @@ private:
+ 	double saturatedMin_;
+ 	/* How much brighter a pixel binned by two is, from the tuning file */
+ 	double binningGain_ = 1.0;
++	/* Mains flicker period to keep the exposure a multiple of, 0 = off */
++	utils::Duration flickerPeriod_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.47.3
+

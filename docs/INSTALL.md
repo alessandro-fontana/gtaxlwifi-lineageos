@@ -9,6 +9,11 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
 ## What you need
 
 - battery above 50%, a good USB cable (data, not charge-only);
+- the bootloader of the last stock firmware, **T580XXS5CTK1** (Android
+  8.1): it is the only version this build is tested with. On stock,
+  Settings → About tablet → Software information → Build number ends
+  with it. If it is older, or you are not sure which stock firmware was
+  flashed last before a custom ROM, flash T580XXS5CTK1 with Odin first;
 - the release files:
   - `gtaxlwifi-boot.img`
   - `gtaxlwifi-recovery.img` (LineageOS Recovery)

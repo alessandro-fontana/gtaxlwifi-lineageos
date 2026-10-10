@@ -1,0 +1,49 @@
+From fde2742b59eb2eda96b5f6cd509dd68fcb9b0616 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH] ButtonSettings: Fix swap capacitive keys setup
+
+The key swapper and the key disabler are independent HAL features.
+Without the disabler, disable_nav_keys is removed from the screen, and
+making swap_capacitive_keys depend on it throws IllegalStateException
+and closes the Buttons screen. Only set the dependency when the disabler
+is supported.
+
+Also stop dereferencing the preference when it is absent.
+
+Assisted-by: LLM
+Change-Id: I57b98cde6bc8b1b03709aaf5ab5d12ba63618a66
+---
+ .../lineageparts/input/ButtonSettings.java       | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/org/lineageos/lineageparts/input/ButtonSettings.java b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+index e14655c..d9ba72f 100644
+--- a/src/org/lineageos/lineageparts/input/ButtonSettings.java
++++ b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+@@ -433,11 +433,17 @@ public class ButtonSettings extends SettingsPreferenceFragment
+         }
+ 
+         mSwapCapacitiveKeys = findPreference(KEY_SWAP_CAPACITIVE_KEYS);
+-        if (mSwapCapacitiveKeys != null && !isKeySwapperSupported(getActivity())) {
+-            prefScreen.removePreference(mSwapCapacitiveKeys);
+-        } else {
+-            mSwapCapacitiveKeys.setOnPreferenceChangeListener(this);
+-            mSwapCapacitiveKeys.setDependency(KEY_DISABLE_NAV_KEYS);
++        if (mSwapCapacitiveKeys != null) {
++            if (!isKeySwapperSupported(getActivity())) {
++                prefScreen.removePreference(mSwapCapacitiveKeys);
++            } else {
++                mSwapCapacitiveKeys.setOnPreferenceChangeListener(this);
++                // disable_nav_keys is removed when the key disabler is
++                // unsupported, and depending on a missing preference throws.
++                if (isKeyDisablerSupported(getActivity())) {
++                    mSwapCapacitiveKeys.setDependency(KEY_DISABLE_NAV_KEYS);
++                }
++            }
+         }
+ 
+         mEnableTaskbar = findPreference(KEY_ENABLE_TASKBAR);
+-- 
+2.47.3
+

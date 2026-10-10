@@ -1,0 +1,40 @@
+From 1206da14f575ecbe0d0dbddc4d21acac179efeec Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:07:17 +0200
+Subject: [PATCH] drm_hwcomposer-upstream: Clear planes on power off
+
+The teardown commit only unbinds the connector and the mode. The planes
+keep the last frame, which the next power on scans out until the first
+new composition: the content from before the screen went off is shown
+instead of the lock screen. Detach them first, as Deinit() does.
+
+Assisted-by: LLM
+Change-Id: I7aa34d2c802752ad6007694ea084cf2591a7781f
+---
+ hwc/HwcDisplay.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/hwc/HwcDisplay.cpp b/hwc/HwcDisplay.cpp
+index e1554a5..73e20d4 100644
+--- a/hwc/HwcDisplay.cpp
++++ b/hwc/HwcDisplay.cpp
+@@ -656,6 +656,16 @@ bool HwcDisplay::SetDisplayEnabled(bool enabled) {
+     }
+   }
+ 
++  // Detach the planes first, as Deinit() does: the teardown below keeps
++  // them, and the next power on would scan out the last frame again.
++  if (!enabled) {
++    AtomicCommitArgs blank_args{};
++    blank_args.blocking = true;
++    blank_args.composition = std::make_shared<LayerToPlaneJoiningPlan>();
++    ALOGE_IF(!ExecuteAtomicCommit(blank_args).has_value(),
++             "Failed to detach the planes before disabling the display.");
++  }
++
+   // Set the display active state.
+   AtomicCommitArgs a_args{};
+   a_args.blocking = true;
+-- 
+2.47.3
+

@@ -1,4 +1,0 @@
-# Camera (§57): debug knobs of the libcamera provider.
-vendor.camera.libcamera.    u:object_r:vendor_camera_libcamera_prop:s0
-# Hardware codecs (§58): v4l2_codec2 configuration.
-ro.vendor.v4l2_codec2.    u:object_r:vendor_v4l2_codec2_prop:s0

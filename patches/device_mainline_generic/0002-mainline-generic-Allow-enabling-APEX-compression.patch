@@ -1,0 +1,30 @@
+From 4d77b2022ca3662ead4dd1f47592f0758ccf5dbc Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 02/33] mainline/generic: Allow enabling APEX compression
+
+Assign OVERRIDE_PRODUCT_COMPRESSED_APEX with ?= so that a device with a
+size-constrained super partition can enable APEX compression.
+
+Assisted-by: LLM
+Change-Id: Ic0439d4c5b1e21de077114d04a39d8b22679ffa3
+---
+ device.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/device.mk b/device.mk
+index f6688ce..6069d3d 100644
+--- a/device.mk
++++ b/device.mk
+@@ -23,7 +23,7 @@ include device/mainline/common/optional/options.mk
+ $(call inherit-product, device/mainline/common/mainline_common.mk)
+ 
+ # APEX
+-OVERRIDE_PRODUCT_COMPRESSED_APEX := false
++OVERRIDE_PRODUCT_COMPRESSED_APEX ?= false
+ 
+ # Audio
+ PRODUCT_COPY_FILES += \
+-- 
+2.47.3
+

@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Read by android.hardware.wifi-service (WifiLegacyHalFactory), §53. -->
-<WifiVendorHal version="1">
-    <path>/vendor/lib64/libwifi-hal-gtaxl.so</path>
-    <primary>1</primary>
-</WifiVendorHal>

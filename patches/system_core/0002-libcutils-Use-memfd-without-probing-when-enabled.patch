@@ -1,0 +1,60 @@
+From 53af0127598ffa9a28f223ae4c2eb84332f5ad41 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH 2/4] libcutils: Use memfd without probing when enabled
+
+As in Android 17, trust sys.use_memfd instead of probing the kernel. The
+probe calls ASHMEM_GET_SIZE on a memfd, which the Android 17 memfd_file
+policy denies to non-app domains, so it falls back to ashmem on kernels
+that have no ashmem device at all.
+
+Assisted-by: LLM
+Change-Id: I4e0baa1e00bc2f1d759cd3c784d37a46b00066b6
+---
+ libcutils/ashmem-dev.cpp | 30 ------------------------------
+ 1 file changed, 30 deletions(-)
+
+diff --git a/libcutils/ashmem-dev.cpp b/libcutils/ashmem-dev.cpp
+index 0874655..54d1bc0 100644
+--- a/libcutils/ashmem-dev.cpp
++++ b/libcutils/ashmem-dev.cpp
+@@ -70,36 +70,6 @@ static bool __has_memfd_support() {
+         return false;
+     }
+ 
+-    // Check that the kernel supports memfd_create().
+-    // This code needs to build on API levels before 30,
+-    // so we can't use the libc wrapper.
+-    android::base::unique_fd fd(
+-            syscall(__NR_memfd_create, "test_android_memfd", MFD_CLOEXEC | MFD_ALLOW_SEALING));
+-    if (fd == -1) {
+-        ALOGE("memfd_create() failed: %m, no memfd support");
+-        return false;
+-    }
+-
+-    // Check that the kernel supports sealing.
+-    if (fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) == -1) {
+-        ALOGE("fcntl(F_ADD_SEALS) failed: %m, no memfd support");
+-        return false;
+-    }
+-
+-    // Check that the kernel supports truncation.
+-    size_t buf_size = getpagesize();
+-    if (ftruncate(fd, buf_size) == -1) {
+-        ALOGE("ftruncate(%zd) failed to set memfd buffer size: %m, no memfd support", buf_size);
+-        return false;
+-    }
+-
+-    // Check that the kernel supports the ashmem ioctls on a memfd.
+-    int ashmem_size = TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_GET_SIZE, 0));
+-    if (ashmem_size != static_cast<int>(buf_size)) {
+-        ALOGE("ioctl(ASHMEM_GET_SIZE): %d != buf_size: %zd , no ashmem-memfd compat support",
+-              ashmem_size, buf_size);
+-        return false;
+-    }
+ 
+     if (debug_log) {
+         ALOGD("memfd: device has memfd support, using it");
+-- 
+2.47.3
+

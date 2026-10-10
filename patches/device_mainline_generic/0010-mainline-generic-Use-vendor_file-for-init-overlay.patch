@@ -1,0 +1,28 @@
+From 6cfb0684411de12423ce09cc9b83297a4c562409 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 10/33] mainline/generic: Use vendor_file for init overlay
+
+The sepolicy build tests reject system_file under /vendor. Label
+/vendor/etc/overlay-system_ext-etc-init as vendor_file.
+
+Assisted-by: LLM
+Change-Id: Iea5905386fbb246097eac3aab7b04af402f74487
+---
+ sepolicy/vendor/file_contexts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sepolicy/vendor/file_contexts b/sepolicy/vendor/file_contexts
+index cbf4992..e491e58 100644
+--- a/sepolicy/vendor/file_contexts
++++ b/sepolicy/vendor/file_contexts
+@@ -1,5 +1,5 @@
+ # Configuration files
+-/vendor/etc/overlay-system_ext-etc-init(/.*)?		u:object_r:system_file:s0
++/vendor/etc/overlay-system_ext-etc-init(/.*)?		u:object_r:vendor_file:s0
+ 
+ # Executables
+ /vendor/bin/hw/android\.hardware\.health-service\.generic		u:object_r:hal_health_default_exec:s0
+-- 
+2.47.3
+

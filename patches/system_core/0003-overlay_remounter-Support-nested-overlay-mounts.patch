@@ -1,0 +1,66 @@
+From f804723ec4e312b5ad4d94a28357b9803b014159 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH 3/4] overlay_remounter: Support nested overlay mounts
+
+An overlay lowerdir can be another overlay mount point. Remounting the
+mounts one by one leaves the parent's old upperdir and workdir busy
+while the child is remounted. Unmount all overlays first, in reverse
+order, then mount them again.
+
+Also reject malformed /proc/mounts entries instead of indexing past them.
+
+Assisted-by: LLM
+Change-Id: I356593d4160b417080af93d36bc8d61ee4f6db9c
+---
+ overlay_remounter/overlay_remounter.cpp | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/overlay_remounter/overlay_remounter.cpp b/overlay_remounter/overlay_remounter.cpp
+index a61d982..ec57477 100644
+--- a/overlay_remounter/overlay_remounter.cpp
++++ b/overlay_remounter/overlay_remounter.cpp
+@@ -21,6 +21,8 @@
+ #include <android-base/logging.h>
+ #include <android-base/strings.h>
+ 
++#include <vector>
++
+ static bool umount_retry(const std::string& mount_point) {
+     int retry_count = 5;
+     bool umounted = false;
+@@ -45,15 +47,27 @@ int main(int /*argc*/, char** argv) {
+     std::string contents;
+     auto result = android::base::ReadFileToString("/proc/mounts", &contents, true);
+ 
+-    auto lines = android::base::Split(contents, "\n");
+-    for (auto const& line : lines) {
++    std::vector<std::vector<std::string>> overlay_mounts;
++    for (const auto& line : android::base::Split(contents, "\n")) {
+         if (!android::base::StartsWith(line, "overlay")) {
+             continue;
+         }
+         auto bits = android::base::Split(line, " ");
+-        if (umount_retry(bits[1]) == false) {
+-            PLOG(FATAL) << "umount FAILED: " << bits[1];
++        if (bits.size() < 4) {
++            LOG(FATAL) << "Invalid overlay mount entry: " << line;
++        }
++        overlay_mounts.emplace_back(std::move(bits));
++    }
++
++    // Overlay lowerdirs can refer to another overlay mount point. Unmount everything first so a
++    // remounted child does not keep the old parent overlay's upperdir and workdir busy.
++    for (auto it = overlay_mounts.rbegin(); it != overlay_mounts.rend(); ++it) {
++        if (!umount_retry((*it)[1])) {
++            PLOG(FATAL) << "umount FAILED: " << (*it)[1];
+         }
++    }
++
++    for (const auto& bits : overlay_mounts) {
+         std::string options;
+         for (auto const& option : android::base::Split(bits[3], ",")) {
+             if (option == "ro" || option == "seclabel" || option == "noatime") continue;
+-- 
+2.47.3
+

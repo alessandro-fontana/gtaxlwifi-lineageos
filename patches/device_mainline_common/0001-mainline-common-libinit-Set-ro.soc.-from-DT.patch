@@ -1,0 +1,55 @@
+From 6d7cb60dc28fe4696c0c8801e68529b484d003d7 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH] mainline/common: libinit: Set ro.soc.* from DT
+
+ro.soc.manufacturer and ro.soc.model are required by the CDD but stay
+empty on devicetree platforms. By convention the last entry of the root
+compatible property names the SoC as "<manufacturer>,<model>"
+(e.g. "samsung,exynos7870"); use its two halves as they are.
+
+Assisted-by: LLM
+Change-Id: I4693eccd9ba8413ff3fb766c0cb1c9a591712712
+---
+ libraries/libinit/libinit_set_properties.cpp | 24 ++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/libraries/libinit/libinit_set_properties.cpp b/libraries/libinit/libinit_set_properties.cpp
+index c681a34..d1f215b 100644
+--- a/libraries/libinit/libinit_set_properties.cpp
++++ b/libraries/libinit/libinit_set_properties.cpp
+@@ -27,7 +27,31 @@ static const std::unordered_map<std::string, std::string> kDmiIdToRoBuildPropMap
+         {"sys_vendor", "manufacturer"},
+ };
+ 
++// The last root compatible entry names the SoC as "<manufacturer>,<model>".
++static void set_soc_properties_from_devicetree() {
++    std::string dt_compatible;
++    ReadFileToString(kDeviceTreePath + "compatible", &dt_compatible);
++    if (dt_compatible.empty()) return;
++
++    // NUL-separated list of strings: keep the last non-empty one.
++    std::string soc;
++    for (size_t pos = 0; pos < dt_compatible.size();) {
++        auto end = dt_compatible.find('\0', pos);
++        if (end == std::string::npos) end = dt_compatible.size();
++        if (end > pos) soc = dt_compatible.substr(pos, end - pos);
++        pos = end + 1;
++    }
++
++    auto comma = soc.find_first_of(',');
++    if (comma == std::string::npos) return;
++
++    property_override("ro.soc.manufacturer", soc.substr(0, comma), true);
++    property_override("ro.soc.model", soc.substr(comma + 1), true);
++}
++
+ void set_properties_from_devicetree() {
++    set_soc_properties_from_devicetree();
++
+     std::string dt_model;
+     ReadFileToString(kDeviceTreePath + "model", &dt_model);
+     if (dt_model.empty()) return;
+-- 
+2.47.3
+

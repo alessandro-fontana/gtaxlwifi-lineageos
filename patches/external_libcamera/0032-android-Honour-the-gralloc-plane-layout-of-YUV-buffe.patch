@@ -1,0 +1,149 @@
+From 25b2a700b745a5ff8a00290c1fdb16aa49659735 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 20:55:27 +0200
+Subject: [PATCH 32/35] android: Honour the gralloc plane layout of YUV buffers
+
+The generic camera buffer backend assumed rows as wide as the image and
+planes packed one after the other. Allocators pad rows to their own
+alignment, so a 1628-pixel wide NV12 preview came out sheared, with a
+misplaced chroma plane. Take the stride, offset and size of each plane
+from the mapper when it reports them, and convert into the destination
+with the stride of the buffer.
+
+Assisted-by: LLM
+---
+ src/android/mm/generic_camera_buffer.cpp | 27 ++++++++++++++++++++++
+ src/android/yuv/post_processor_yuv.cpp   | 29 ++++++++++++------------
+ src/android/yuv/post_processor_yuv.h     |  2 --
+ 3 files changed, 41 insertions(+), 17 deletions(-)
+
+diff --git a/src/android/mm/generic_camera_buffer.cpp b/src/android/mm/generic_camera_buffer.cpp
+index 7795ac90..fd527d75 100644
+--- a/src/android/mm/generic_camera_buffer.cpp
++++ b/src/android/mm/generic_camera_buffer.cpp
+@@ -92,6 +92,33 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
+ 	const unsigned int numPlanes = info.numPlanes();
+ 	planeInfo_.resize(numPlanes);
+ 
++	/*
++	 * Take the plane geometry from the allocator when it reports it: rows
++	 * may be padded beyond the width, and planes placed past the end of
++	 * the previous one.
++	 */
++	std::vector<android::ui::PlaneLayout> layouts;
++	if (android::GraphicBufferMapper::get().getPlaneLayouts(handle_, &layouts) == android::OK &&
++	    layouts.size() == numPlanes) {
++		bool valid = true;
++		for (unsigned int i = 0; i < numPlanes; ++i) {
++			const auto &layout = layouts[i];
++			if (layout.offsetInBytes < 0 || layout.strideInBytes <= 0 ||
++			    layout.totalSizeInBytes <= 0 ||
++			    layout.offsetInBytes + layout.totalSizeInBytes > bufferLength_) {
++				valid = false;
++				break;
++			}
++
++			planeInfo_[i].stride = layout.strideInBytes;
++			planeInfo_[i].offset = layout.offsetInBytes;
++			planeInfo_[i].size = layout.totalSizeInBytes;
++		}
++
++		if (valid)
++			return;
++	}
++
+ 	unsigned int offset = 0;
+ 	for (unsigned int i = 0; i < numPlanes; ++i) {
+ 		const unsigned int planeSize = info.planeSize(size, i);
+diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
+index d1be1a9a..81c988be 100644
+--- a/src/android/yuv/post_processor_yuv.cpp
++++ b/src/android/yuv/post_processor_yuv.cpp
+@@ -104,9 +104,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+ 					sourceStride_[1],
+ 					sourceSize_.width, sourceSize_.height,
+ 					destination->plane(0).data(),
+-					destinationStride_[0],
++					destination->stride(0),
+ 					destination->plane(1).data(),
+-					destinationStride_[1],
++					destination->stride(1),
+ 					destinationSize_.width,
+ 					destinationSize_.height,
+ 					libyuv::FilterMode::kFilterBilinear);
+@@ -115,9 +115,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+ 		ret = libyuv::YUY2ToNV12(sourceMapped.planes()[0].data(),
+ 					 sourceStride_[0],
+ 					 destination->plane(0).data(),
+-					 destinationStride_[0],
++					 destination->stride(0),
+ 					 destination->plane(1).data(),
+-					 destinationStride_[1],
++					 destination->stride(1),
+ 					 destinationSize_.width,
+ 					 destinationSize_.height);
+ 		break;
+@@ -155,9 +155,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+ 
+ 		ret = libyuv::ARGBToNV12(src, srcStride,
+ 					 destination->plane(0).data(),
+-					 destinationStride_[0],
++					 destination->stride(0),
+ 					 destination->plane(1).data(),
+-					 destinationStride_[1],
++					 destination->stride(1),
+ 					 dw, dh);
+ 		break;
+ 	}
+@@ -201,14 +201,19 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
+ 			return false;
+ 		}
+ 	}
++	/* The destination stride is the buffer's, which may be padded. */
++	const PixelFormatInfo &destinationInfo = PixelFormatInfo::info(destinationFormat_);
+ 	for (unsigned int i = 0; i < destinationNumPlanes_; i++) {
+-		if (destination.plane(i).size() < destinationLength_[i]) {
++		const unsigned int length =
++			destinationInfo.planeSize(destinationSize_.height, i,
++						  destination.stride(i));
++		if (destination.plane(i).size() < length) {
+ 			LOG(YUV, Error)
+ 				<< "The destination planes lengths are too small, "
+ 				<< "actual size[" << i << "]="
+ 				<< destination.plane(i).size()
+ 				<< ", expected size[" << i << "]="
+-				<< sourceLength_[i];
++				<< length;
+ 			return false;
+ 		}
+ 	}
+@@ -233,11 +238,5 @@ void PostProcessorYuv::calculateLengths(const StreamConfiguration &inCfg,
+ 							sourceStride_[i]);
+ 	}
+ 
+-	const PixelFormatInfo &destinationInfo = PixelFormatInfo::info(destinationFormat_);
+-	destinationNumPlanes_ = destinationInfo.numPlanes();
+-	for (unsigned int i = 0; i < destinationInfo.numPlanes(); i++) {
+-		destinationStride_[i] = destinationInfo.stride(destinationSize_.width, i, 1);
+-		destinationLength_[i] = destinationInfo.planeSize(destinationSize_.height, i,
+-								  destinationStride_[i]);
+-	}
++	destinationNumPlanes_ = PixelFormatInfo::info(destinationFormat_).numPlanes();
+ }
+diff --git a/src/android/yuv/post_processor_yuv.h b/src/android/yuv/post_processor_yuv.h
+index 6e8e5b40..50e2548f 100644
+--- a/src/android/yuv/post_processor_yuv.h
++++ b/src/android/yuv/post_processor_yuv.h
+@@ -34,9 +34,7 @@ private:
+ 	libcamera::PixelFormat destinationFormat_;
+ 	std::vector<uint8_t> scaled_;
+ 	unsigned int sourceLength_[3] = {};
+-	unsigned int destinationLength_[3] = {};
+ 	unsigned int sourceStride_[3] = {};
+-	unsigned int destinationStride_[3] = {};
+ 	unsigned int sourceNumPlanes_;
+ 	unsigned int destinationNumPlanes_;
+ };
+-- 
+2.47.3
+

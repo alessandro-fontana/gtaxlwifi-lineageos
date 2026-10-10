@@ -12,8 +12,22 @@ for this board.
 - **Install**: [`docs/INSTALL.md`](docs/INSTALL.md)
 - **Build**: [`docs/SETUP.md`](docs/SETUP.md)
 
+| repository | what |
+|---|---|
+| [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
+| [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.2.9 and this board's commits |
+| this repository | changes to other projects (`patches/`), release tools (`tools/`), instructions, releases |
+
 One branch per LineageOS release, as in LineageOS's own repositories:
 `lineage-23.2` builds with a `lineage-23.2` tree.
+
+## AI assistance
+
+This port was developed with the help of an LLM coding assistant. Every
+commit made with it carries the trailer `Assisted-by: LLM`, as the
+LineageOS [AI coding assistants guidelines](https://github.com/LineageOS/charter/blob/main/ai-coding-assistants.md)
+require; the code was built and tested on the author's own SM-T580, and
+the author is responsible for it.
 
 ## What works
 
@@ -28,18 +42,9 @@ LineageOS Recovery.
 
 Not working: the microphone of a wired headset.
 
-## Layout
-
-| path | what |
-|---|---|
-| `android/gtaxlwifi/` | the device tree, `device/samsung/gtaxlwifi` in the LineageOS tree |
-| `android/gtaxlwifi/.patches/` | changes to other LineageOS and AOSP projects, applied as SETUP.md says |
-| `android/gtaxlwifi/bootloader/loader/` | the small loader Samsung's bootloader starts: it unpacks the kernel, completes the device tree and boots Linux |
-| `kernel/patches-7.2.8/` | the kernel series, for `git am` on Linux v7.2.8 |
-| `docs/` | how to build and how to install |
-
 ## Licensing
 
-The kernel patches and the loader are GPL-2.0. The rest of the device
-tree is Apache-2.0 unless a file says otherwise. Proprietary files are
-not in this repository: `extract-files.py` fetches them, see SETUP.md.
+The kernel and the loader are GPL-2.0. Everything else is Apache-2.0
+unless a file says otherwise. Proprietary files are not in these
+repositories: the device tree's `extract-files.py` fetches them, see
+SETUP.md.

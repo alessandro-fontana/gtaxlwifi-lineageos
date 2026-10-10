@@ -1,0 +1,44 @@
+From b49b8dd69c0a4d8c78db5a69b0522bffd44fcf7e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 32/33] mainline/generic: Shorten ueventd quiescence to 1s
+
+On its second run the generic_init ueventd cannot stop early and always
+waits for the full quiescence window, which every uevent restarts:
+a slow firmware load can delay the boot by several seconds. Uevents
+arriving later are handled by the coldboot of init's ueventd.
+
+Assisted-by: LLM
+Change-Id: I5579c8b942ddc2a9adeca5cd41384618f3ba2e34
+---
+ services/generic_init/ueventd.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/services/generic_init/ueventd.cpp b/services/generic_init/ueventd.cpp
+index 33c368a..c99ab04 100644
+--- a/services/generic_init/ueventd.cpp
++++ b/services/generic_init/ueventd.cpp
+@@ -139,6 +139,11 @@ static std::string ConstructUeventString(const Uevent& uevent) {
+     return result;
+ }
+ 
++// main_loop exits after this long without a uevent. The second run always
++// waits for the whole window, which every uevent restarts; later uevents
++// are handled by the coldboot of init's ueventd.
++static constexpr auto kUeventQuiescence = 1s;
++
+ void main_loop(const UeventListener& uevent_listener,
+                const std::vector<std::shared_ptr<UeventHandler>>& uevent_handlers,
+                const bool& first_run) {
+@@ -156,7 +161,7 @@ void main_loop(const UeventListener& uevent_listener,
+                 LOG(INFO) << "Handled uevent";
+             }
+             return ListenerAction::kContinue;
+-        }, true, 5s);
++        }, true, kUeventQuiescence);
+     } while (!MountHandler::CanQuitUeventd(true));
+ }
+ 
+-- 
+2.47.3
+

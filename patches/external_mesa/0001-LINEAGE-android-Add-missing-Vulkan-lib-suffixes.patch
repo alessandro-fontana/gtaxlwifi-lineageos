@@ -1,0 +1,32 @@
+From ea80e83117151d9a6c2ca0be82f0ef4b2407d72a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:59 +0200
+Subject: [PATCH 1/2] LINEAGE: android: Add missing Vulkan lib suffixes
+
+Name the libraries of the asahi, imagination and nouveau Vulkan drivers
+after what Meson builds, so that they can be listed in
+BOARD_MESA3D_VULKAN_DRIVERS.
+
+Assisted-by: LLM
+Change-Id: I2773380a0bb7cf9fedebc3c75e13d76b3f0be5c5
+---
+ android/Android.mk | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/android/Android.mk b/android/Android.mk
+index bc82d1a..811ed79 100644
+--- a/android/Android.mk
++++ b/android/Android.mk
+@@ -50,6 +50,9 @@ MESA_VK_LIB_SUFFIX_freedreno := freedreno
+ MESA_VK_LIB_SUFFIX_broadcom := broadcom
+ MESA_VK_LIB_SUFFIX_panfrost := panfrost
+ MESA_VK_LIB_SUFFIX_virtio := virtio
++MESA_VK_LIB_SUFFIX_asahi := asahi
++MESA_VK_LIB_SUFFIX_imagination := powervr_mesa
++MESA_VK_LIB_SUFFIX_nouveau := nouveau
+ MESA_VK_LIB_SUFFIX_swrast := lvp_mesa3d
+ 
+ include $(CLEAR_VARS)
+-- 
+2.47.3
+

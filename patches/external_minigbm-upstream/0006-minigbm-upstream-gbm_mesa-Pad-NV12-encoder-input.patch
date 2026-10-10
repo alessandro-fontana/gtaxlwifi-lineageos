@@ -1,0 +1,36 @@
+From 15af7c093ede91ac39da69fbbf04b1b6d2258a5b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 6/7] minigbm-upstream: gbm_mesa: Pad NV12 encoder input
+
+Hardware encoders may read whole macroblock rows and some padding past
+the chroma plane (Exynos MFC: rows rounded up to 16, plus 256 bytes).
+Reserve room for it in NV12 and NV21 buffers allocated for an encoder,
+so that these reads do not fault in the IOMMU.
+
+Assisted-by: LLM
+Change-Id: I48e74e7e071a9f0cfc991316932b2cde25c076d7
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index aab88fb..64ca010 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -385,6 +385,12 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		/* Always use linear for spoofed format allocations. */
+ 		drv_bo_from_format(bo, alloc_args.width, 1, alloc_args.height, format);
+ 		bo_layout_ready = true;
++		/* Encoders may read whole macroblock rows and some padding past
++		 * the chroma plane (Exynos MFC: rows to a multiple of 16, plus
++		 * 256 bytes): a read outside the buffer is an IOMMU fault. */
++		if ((format == DRM_FORMAT_NV12 || format == DRM_FORMAT_NV21) &&
++		    (use_flags & BO_USE_HW_VIDEO_ENCODER))
++			bo->meta.total_size += alloc_args.width * 16 + 4096;
+ 		bo->meta.total_size = ALIGN(bo->meta.total_size, size_align);
+ 		alloc_args.drm_format = DRM_FORMAT_R8;
+ 		alloc_args.width = bo->meta.total_size;
+-- 
+2.47.3
+

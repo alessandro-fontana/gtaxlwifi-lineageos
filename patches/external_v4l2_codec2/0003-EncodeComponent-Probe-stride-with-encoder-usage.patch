@@ -1,0 +1,39 @@
+From 42e357428bd2fbf61a7aa1d928fb780da96e7c13 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 13:06:23 +0200
+Subject: [PATCH 3/8] EncodeComponent: Probe stride with encoder usage
+
+The stride passed to the encoder in S_FMT comes from a probe allocation.
+gralloc may align video buffers differently from CPU-only ones (minigbm
+aligns them to 32 pixels), so a probe without the video usage reports a
+pitch the input buffers do not have, and pictures whose width is not a
+multiple of 32 come out sheared.
+
+Assisted-by: LLM
+Change-Id: I194b9eacb6dad52b4096cbcd1d750140dc6cc969
+---
+ components/EncodeComponent.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index 65de283..607f315 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -159,8 +159,12 @@ std::optional<uint32_t> getVideoFrameStride(VideoPixelFormat format, ui::Size si
+                                                                   : HalPixelFormat::YCBCR_420_888;
+ 
+     std::shared_ptr<C2GraphicBlock> block;
+-    status = pool->fetchGraphicBlock(size.width, size.height, static_cast<uint32_t>(halFormat),
+-                                     C2MemoryUsage(C2MemoryUsage::CPU_READ), &block);
++    // Same usage as the input buffers: gralloc may align the stride differently for video.
++    status = pool->fetchGraphicBlock(
++            size.width, size.height, static_cast<uint32_t>(halFormat),
++            C2MemoryUsage(C2MemoryUsage::CPU_READ,
++                          static_cast<uint64_t>(BufferUsage::VIDEO_ENCODER)),
++            &block);
+     if (status != C2_OK) {
+         ALOGE("Failed to fetch graphic block (err=%d)", status);
+         return std::nullopt;
+-- 
+2.47.3
+

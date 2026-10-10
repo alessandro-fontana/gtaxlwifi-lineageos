@@ -1,0 +1,77 @@
+From 09f0df8098e92ad1ed6c38fad18fb0cf72707615 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 2 Oct 2026 12:18:27 +0200
+Subject: [PATCH 8/8] VideoFramePool: Accept AIDL BufferPool blocks
+
+Codec2 hands out AIDL BufferPool (bufferpool2) blocks since Android 14,
+but the buffer id was only read from HIDL BufferPool data, so decoding
+to byte buffers failed at the first output buffer. A basic block pool
+gives blocks without pool data, which crashed on a NULL dereference.
+
+Read the id from AIDL BufferPool data too, and fail on a block without
+pool data.
+
+Assisted-by: LLM
+Change-Id: I88dc8581f00c9f916908a4be9bcf073a0918d902
+---
+ components/Android.bp         |  1 +
+ components/VideoFramePool.cpp | 17 +++++++++++++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/components/Android.bp b/components/Android.bp
+index ecb5fed..c32d59a 100644
+--- a/components/Android.bp
++++ b/components/Android.bp
+@@ -45,6 +45,7 @@ cc_library {
+         "libstagefright_foundation",
+         "libui",
+         "libnativewindow",
++        "libstagefright_aidl_bufferpool2",
+         "libv4l2_codec2_common",
+     ],
+ 
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index 466d6b9..6a8ecfe 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include <C2BlockInternal.h>
+ #include <bufferpool/BufferPoolTypes.h>
++#include <bufferpool2/BufferPoolTypes.h>
+ 
+ #include <android/hardware_buffer.h>
+ #include <android/hardware/graphics/common/1.0/types.h>
+@@ -26,6 +27,7 @@
+ 
+ using android::hardware::graphics::common::V1_0::BufferUsage;
+ using android::hardware::media::bufferpool::BufferPoolData;
++using AidlBufferPoolData = aidl::android::hardware::media::bufferpool2::BufferPoolData;
+ 
+ namespace android {
+ 
+@@ -74,6 +76,21 @@ std::optional<uint32_t> VideoFramePool::getBufferIdFromGraphicBlock(C2BlockPool&
+     case V4L2AllocatorId::SECURE_LINEAR: {
+         std::shared_ptr<_C2BlockPoolData> blockPoolData =
+                 _C2BlockFactory::GetGraphicBlockPoolData(block);
++        // A basic block pool, as Codec2 picks when the pool mask leaves GRALLOC out, gives
++        // blocks without pool data.
++        if (!blockPoolData) {
++            ALOGE("Obtained C2GraphicBlock has no block pool data.");
++            return std::nullopt;
++        }
++        // HIDL BufferPool, or AIDL BufferPool (bufferpool2) since Android 14.
++        if (blockPoolData->getType() == _C2BlockPoolData::TYPE_BUFFERPOOL2) {
++            std::shared_ptr<AidlBufferPoolData> bpData;
++            if (!_C2BlockFactory::GetBufferPoolData(blockPoolData, &bpData) || !bpData) {
++                ALOGE("BufferPoolData unavailable in block.");
++                return std::nullopt;
++            }
++            return bpData->mId;
++        }
+         if (blockPoolData->getType() != _C2BlockPoolData::TYPE_BUFFERPOOL) {
+             ALOGE("Obtained C2GraphicBlock is not bufferpool-backed.");
+             return std::nullopt;
+-- 
+2.47.3
+

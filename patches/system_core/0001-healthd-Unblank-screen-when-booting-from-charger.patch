@@ -1,0 +1,37 @@
+From d69b24ade4ac40eb62fce09b34423d785cbc1ac0 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH 1/4] healthd: Unblank screen when booting from charger
+
+init stops the charger class as soon as sys.boot_from_charger_mode is
+set. If the panel is still blanked at that point, the framework starts
+without a valid display and the screen stays black until the power key
+is pressed again.
+
+Assisted-by: LLM
+Change-Id: I526a21a4bb285320f9a8b2b03a8163981ebcc383
+---
+ healthd/healthd_mode_charger.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/healthd/healthd_mode_charger.cpp b/healthd/healthd_mode_charger.cpp
+index 54b469b..1adaa7e 100644
+--- a/healthd/healthd_mode_charger.cpp
++++ b/healthd/healthd_mode_charger.cpp
+@@ -495,6 +495,13 @@ void Charger::ProcessKey(int code, int64_t now) {
+                    accordingly. */
+                 if (property_get_bool("ro.enable_boot_charger_mode", false)) {
+                     LOGW("[%" PRId64 "] booting from charger mode\n", now);
++                    // init stops the charger right after this property is set;
++                    // a blanked panel would leave the framework without a
++                    // valid display until the power key is pressed again.
++                    if (healthd_draw_ != nullptr && screen_blanked_) {
++                        healthd_draw_->blank_screen(false, static_cast<int>(drm_));
++                        screen_blanked_ = false;
++                    }
+                     property_set("sys.boot_from_charger_mode", "1");
+                 } else {
+                     if (batt_anim_.cur_level >= boot_min_cap_) {
+-- 
+2.47.3
+

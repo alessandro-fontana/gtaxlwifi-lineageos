@@ -1,0 +1,30 @@
+From 10bb4f8efe2e62f5208c1d5ffab8d855cdeba93e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 04/33] mainline/generic: Fix vtconsole unbind trigger
+
+vendor_init cannot read sys.bootstat.first_boot_completed, so the
+trigger never fires. Use sys.boot_completed instead.
+
+Assisted-by: LLM
+Change-Id: I5ed3ef9f5dd08472c5395217e19d79d5d11ebe33
+---
+ configs/init/init.generic.rc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configs/init/init.generic.rc b/configs/init/init.generic.rc
+index 034b184..2367cd2 100644
+--- a/configs/init/init.generic.rc
++++ b/configs/init/init.generic.rc
+@@ -50,7 +50,7 @@ on early-boot && property:ro.vendor.get_display_ppi.lcd_density=*
+ on boot
+     setprop ro.sf.lcd_density 160
+ 
+-on property:ro.hardware.gralloc=default && property:sys.bootstat.first_boot_completed=1
++on property:ro.hardware.gralloc=default && property:sys.boot_completed=1
+     write /sys/class/vtconsole/vtcon0/bind 0
+     write /sys/class/vtconsole/vtcon1/bind 0
+ 
+-- 
+2.47.3
+

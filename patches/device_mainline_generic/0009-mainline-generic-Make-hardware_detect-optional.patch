@@ -1,0 +1,104 @@
+From 5ae9533614d0f82b8fd9ff54f9d82245ab41fe53 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 09/33] mainline/generic: Make hardware_detect optional
+
+Add TARGET_GENERIC_HARDWARE_DETECT (default true). When false,
+hardware_detect, its init_dev_config override, hal_services.rc and the
+alternative graphics HALs are not installed, and minigbm_upstream and
+drm_hwcomposer_upstream keep their own VINTF fragments and init script.
+Devices with fixed hardware can then declare it in their build.
+
+Assisted-by: LLM
+Change-Id: Idc908db431144ee3f6c8fbfec94c16e5a7638f15
+---
+ device.mk | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index 9ca4c58..3696e5e 100644
+--- a/device.mk
++++ b/device.mk
+@@ -61,7 +61,13 @@ PRODUCT_PACKAGES += \
+ # Graphics (Mesa)
+ TARGET_MESA_ENABLE_SOFTWARE_RENDERER := true
+ 
++# Hardware detection
++# Devices with fixed hardware can set this to false and declare their HALs,
++# APEXes and VINTF fragments in their own build instead.
++TARGET_GENERIC_HARDWARE_DETECT ?= true
++
+ # Graphics allocator
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_COPY_FILES += \
+     device/mainline/common/optional/graphics-allocator-hal_default-hidl-2.0/manifest_mainline_common_graphics-allocator-hal_default-hidl-2.0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-allocator-hal_default-hidl-2.0.xml \
+     external/minigbm-upstream/cros_gralloc/aidl/allocator.minigbm_upstream.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/allocator.minigbm_upstream.xml \
+@@ -71,6 +77,7 @@ PRODUCT_PACKAGES += \
+     android.hardware.graphics.allocator@2.0-impl \
+     android.hardware.graphics.allocator@2.0-service \
+     android.hardware.graphics.mapper@2.0-impl-2.1
++endif
+ 
+ PRODUCT_PACKAGES += \
+     gralloc.gbm
+@@ -78,9 +85,12 @@ PRODUCT_PACKAGES += \
+ TARGET_MINIGBM_UPSTREAM_ENABLE_GBM_MESA_DRIVER := true
+ TARGET_MINIGBM_UPSTREAM_INSIDE_APEX := false
+ 
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ $(call soong_config_set_bool,minigbm_upstream,include_vintf_fragments,false)
++endif
+ 
+ # Graphics composer
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_COPY_FILES += \
+     device/mainline/common/optional/drm_hwcomposer/manifest_mainline_common_graphics-composer-hal_drm_hwcomposer_libhardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-composer-hal_default-hidl-2.4.xml \
+     device/mainline/common/optional/graphics-composer-hal_default-hidl-2.2/manifest_mainline_common_graphics-composer-hal_default-hidl-2.2.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf_src/manifest_mainline_common_graphics-composer-hal_default-hidl-2.2.xml \
+@@ -92,12 +102,17 @@ PRODUCT_PACKAGES += \
+     android.hardware.graphics.composer@2.4-service
+ 
+ PRODUCT_PACKAGES += \
+-    android.hardware.composer.hwc3-service.drm_upstream \
+     android.hardware.graphics.composer@2.1-service.drmfb
++endif
++
++PRODUCT_PACKAGES += \
++    android.hardware.composer.hwc3-service.drm_upstream
+ 
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ $(call soong_config_set_bool,drm_hwcomposer_upstream,include_init_rc,false)
+ $(call soong_config_set_bool,drm_hwcomposer_upstream,include_vintf_fragments,false)
+ $(call soong_config_set_bool,drmfb_composer,include_vintf_fragments,false)
++endif
+ 
+ # Graphics Vulkan
+ PRODUCT_PACKAGES += \
+@@ -132,9 +147,13 @@ PRODUCT_PACKAGES += \
+ 
+ PRODUCT_PACKAGES += \
+     console_override.rc \
+-    device_generic_logging.rc \
++    device_generic_logging.rc
++
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
++PRODUCT_PACKAGES += \
+     hal_services.rc \
+     init_dev_config_override.rc
++endif
+ 
+ # device_generic_settings turns on "show taps" at every boot.
+ TARGET_GENERIC_SHOW_TOUCHES ?= true
+@@ -147,8 +166,10 @@ endif
+ PRODUCT_PACKAGES += \
+     zram.rc
+ 
++ifeq ($(TARGET_GENERIC_HARDWARE_DETECT),true)
+ PRODUCT_PACKAGES += \
+     hardware_detect
++endif
+ 
+ $(call soong_config_set,mainline_common_libinit,set_properties_from,both)
+ 
+-- 
+2.47.3
+

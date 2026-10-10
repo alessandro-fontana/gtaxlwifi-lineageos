@@ -1,0 +1,38 @@
+From cbb80546a2541dcf05855f28357e3151025ba48f Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:39 +0200
+Subject: [PATCH 4/4] overlay_remounter: Preserve read-write overlays
+
+Mount each overlay read-only only if it was mounted read-only, instead
+of forcing MS_RDONLY on all of them.
+
+Assisted-by: LLM
+Change-Id: I22104cfe1a57cbd4fcfce628a5c41e2eeaab3c28
+---
+ overlay_remounter/overlay_remounter.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/overlay_remounter/overlay_remounter.cpp b/overlay_remounter/overlay_remounter.cpp
+index ec57477..e7f5d9a 100644
+--- a/overlay_remounter/overlay_remounter.cpp
++++ b/overlay_remounter/overlay_remounter.cpp
+@@ -69,12 +69,14 @@ int main(int /*argc*/, char** argv) {
+ 
+     for (const auto& bits : overlay_mounts) {
+         std::string options;
++        unsigned int mountflags = MS_NOATIME;
+         for (auto const& option : android::base::Split(bits[3], ",")) {
+-            if (option == "ro" || option == "seclabel" || option == "noatime") continue;
++            if (option == "seclabel" || option == "noatime") continue;
++            if (option == "ro") mountflags |= MS_RDONLY;
+             if (!options.empty()) options += ',';
+             options += option;
+         }
+-        result = mount("overlay", bits[1].c_str(), "overlay", MS_RDONLY | MS_NOATIME,
++        result = mount("overlay", bits[1].c_str(), "overlay", mountflags,
+                        options.c_str());
+         if (result == 0) {
+             LOG(INFO) << "mount succeeded: " << bits[1] << " " << options;
+-- 
+2.47.3
+

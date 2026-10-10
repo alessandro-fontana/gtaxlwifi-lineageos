@@ -1,0 +1,61 @@
+From 3a1c9771adb105247e35daf7e93d978a2dccb60b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 13/33] mainline/generic: Label hidden render node
+
+hardware_detect hides a render node by renaming it to renderD<N>_orig,
+which no file_contexts entry matches, so it keeps the tmpfs label of the
+nodes created by generic_init. Label it gpu_device and relabel /dev/dri
+recursively in post-fs, after hardware_detect has run.
+
+Assisted-by: LLM
+Change-Id: Iebe4c0c683c7604d7bc40cc53c7c92ffe92fc06a
+---
+ configs/init/dev_restorecon.rc | 4 ++++
+ sepolicy/private/init_dev.te   | 5 +++++
+ sepolicy/vendor/file_contexts  | 2 ++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/configs/init/dev_restorecon.rc b/configs/init/dev_restorecon.rc
+index 7780e81..b824256 100644
+--- a/configs/init/dev_restorecon.rc
++++ b/configs/init/dev_restorecon.rc
+@@ -2,3 +2,7 @@
+ # ueventd only relabels the nodes in them.
+ on early-init
+     restorecon /dev/dri /dev/input /dev/snd /dev/dma_heap
++
++# hardware_detect renames the hidden render node after the first relabel.
++on post-fs
++    restorecon_recursive /dev/dri
+diff --git a/sepolicy/private/init_dev.te b/sepolicy/private/init_dev.te
+index 90fbfb5..233a196 100644
+--- a/sepolicy/private/init_dev.te
++++ b/sepolicy/private/init_dev.te
+@@ -3,8 +3,13 @@ allow init tmpfs:dir relabelfrom;
+ allow init { gpu_device input_device audio_device dmabuf_heap_device }:dir relabelto;
+ 
+ # Nodes created by generic_init before the policy.
++allow init tmpfs:chr_file relabelfrom;
++allow init gpu_device:chr_file relabelto;
+ allow init { loop_device swap_block_device }:blk_file relabelto;
+ 
++# Needed by restorecon_recursive /dev/dri.
++allow init gpu_device:chr_file getattr;
++
+ # ueventd relabels the nodes created by generic_init before the policy.
+ allow ueventd tmpfs:{ chr_file lnk_file } { getattr relabelfrom };
+ allow ueventd dev_type:{ chr_file lnk_file } relabelto;
+diff --git a/sepolicy/vendor/file_contexts b/sepolicy/vendor/file_contexts
+index e491e58..83f13b1 100644
+--- a/sepolicy/vendor/file_contexts
++++ b/sepolicy/vendor/file_contexts
+@@ -5,3 +5,5 @@
+ /vendor/bin/hw/android\.hardware\.health-service\.generic		u:object_r:hal_health_default_exec:s0
+ /vendor/bin/get_display_ppi						u:object_r:vendor_get_display_ppi_exec:s0
+ /vendor/bin/hardware_detect						u:object_r:vendor_hardware_detect_exec:s0
++# Render node renamed by hardware_detect
++/dev/dri/renderD[0-9]+_orig    u:object_r:gpu_device:s0
+-- 
+2.47.3
+

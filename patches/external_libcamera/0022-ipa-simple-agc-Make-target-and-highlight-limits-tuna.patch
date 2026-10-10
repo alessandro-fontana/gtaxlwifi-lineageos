@@ -1,0 +1,124 @@
+From f3377c444adde8813d672890a1a1ee7cd6a4f0be Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:28:29 +0200
+Subject: [PATCH 22/31] ipa: simple: agc: Make target and highlight limits
+ tunable
+
+The MSV target, the minimum MSV down to which the highlight protection
+may lower the exposure, and the share of saturated pixels it allows
+depend on the sensor and on taste. Read them from the tuning file,
+keeping the current values as defaults.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/agc.cpp | 37 ++++++++++++++++++++-----------
+ src/ipa/simple/algorithms/agc.h   |  7 ++++++
+ 2 files changed, 31 insertions(+), 13 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index edf4feb2..15c598ea 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -41,13 +41,13 @@ static constexpr float kExposureOptimal = kExposureBinsCount / 2.0;
+ static constexpr float kExposureSatisfactory = 0.2;
+ 
+ /*
+- * Highlight protection: above kSaturatedMax of burnt pixels the exposure
+- * goes down, as long as the MSV stays above kExposureMSVMin; below
+- * kSaturatedMin it may go up again. The gap is the hysteresis.
++ * Highlight protection, defaults of the tuning file keys: above
++ * saturatedMax of burnt pixels the exposure goes down, as long as the MSV
++ * stays above msvMin; below half of saturatedMax it may go up again. The
++ * gap is the hysteresis.
+  */
+-static constexpr double kSaturatedMax = 0.04;
+-static constexpr double kSaturatedMin = 0.02;
+-static constexpr float kExposureMSVMin = 1.6;
++static constexpr double kSaturatedMaxDefault = 0.04;
++static constexpr float kExposureMSVMinDefault = 1.6;
+ 
+ /*
+  * Frames to wait at most for a change to show in the sensor controls
+@@ -56,10 +56,21 @@ static constexpr float kExposureMSVMin = 1.6;
+ static constexpr unsigned int kMaxWait = 8;
+ 
+ Agc::Agc()
+-	: pending_(false), exposureReq_(0), gainReq_(0), waited_(0)
++	: pending_(false), exposureReq_(0), gainReq_(0), waited_(0),
++	  target_(kExposureOptimal), msvMin_(kExposureMSVMinDefault),
++	  saturatedMax_(kSaturatedMaxDefault), saturatedMin_(kSaturatedMaxDefault / 2)
+ {
+ }
+ 
++int Agc::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData)
++{
++	target_ = tuningData["target"].get<float>(kExposureOptimal);
++	msvMin_ = tuningData["msvMin"].get<float>(kExposureMSVMinDefault);
++	saturatedMax_ = tuningData["saturatedMax"].get<double>(kSaturatedMaxDefault);
++	saturatedMin_ = saturatedMax_ / 2;
++	return 0;
++}
++
+ int Agc::configure([[maybe_unused]] IPAContext &context,
+ 		   [[maybe_unused]] const IPAConfigInfo &configInfo)
+ {
+@@ -99,10 +110,10 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	 * light unless the rest would get too dark, and more light is not
+ 	 * asked for while they are already at the limit.
+ 	 */
+-	bool over = exposureMSV > kExposureOptimal + kExposureSatisfactory ||
+-		    (saturated > kSaturatedMax && exposureMSV > kExposureMSVMin);
+-	bool under = exposureMSV < kExposureOptimal - kExposureSatisfactory &&
+-		     saturated < kSaturatedMin;
++	bool over = exposureMSV > target_ + kExposureSatisfactory ||
++		    (saturated > saturatedMax_ && exposureMSV > msvMin_);
++	bool under = exposureMSV < target_ - kExposureSatisfactory &&
++		     saturated < saturatedMin_;
+ 	if (!over && !under)
+ 		return;
+ 
+@@ -113,14 +124,14 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	 * largest step.
+ 	 */
+ 	double factor;
+-	if (over && exposureMSV <= kExposureOptimal + kExposureSatisfactory)
++	if (over && exposureMSV <= target_ + kExposureSatisfactory)
+ 		factor = 0.85;
+ 	else if (exposureMSV >= kExposureBinsCount - 0.5)
+ 		factor = 0.5;
+ 	else if (exposureMSV <= 1.2)
+ 		factor = 2.0;
+ 	else
+-		factor = std::clamp(std::sqrt(kExposureOptimal / exposureMSV), 0.6, 1.6);
++		factor = std::clamp(std::sqrt(target_ / exposureMSV), 0.6, 1.6);
+ 
+ 	/* Exposure first, gain only for what the exposure cannot give. */
+ 	double total = exposure * again * factor;
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index f1a64bf8..fcbf02fe 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -19,6 +19,7 @@ public:
+ 	Agc();
+ 	~Agc() = default;
+ 
++	int init(IPAContext &context, const YamlObject &tuningData) override;
+ 	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+@@ -34,6 +35,12 @@ private:
+ 	int32_t exposureReq_;
+ 	double gainReq_;
+ 	unsigned int waited_;
++
++	/* From the tuning file: MSV target and highlight protection. */
++	float target_;
++	float msvMin_;
++	double saturatedMax_;
++	double saturatedMin_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.47.3
+

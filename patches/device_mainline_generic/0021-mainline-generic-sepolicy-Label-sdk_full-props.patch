@@ -1,0 +1,36 @@
+From c808ccd509e1706a478b6deb67c4bd20876e5eb8 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 21/33] mainline/generic: sepolicy: Label sdk_full props
+
+ro.*build.version.sdk_full, known_codenames and
+release_or_preview_display have no context in the platform policy yet.
+Label them like their *.sdk siblings.
+
+Assisted-by: LLM
+Change-Id: Iddc5c02be794bc366e018f0691085add2eb8386c
+---
+ sepolicy/private/property_contexts | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+ create mode 100644 sepolicy/private/property_contexts
+
+diff --git a/sepolicy/private/property_contexts b/sepolicy/private/property_contexts
+new file mode 100644
+index 0000000..c53723f
+--- /dev/null
++++ b/sepolicy/private/property_contexts
+@@ -0,0 +1,11 @@
++# Not labelled by the platform policy yet; same contexts as *.sdk.
++ro.build.version.sdk_full                    u:object_r:build_prop:s0 exact string
++ro.build.version.known_codenames             u:object_r:build_prop:s0 exact string
++ro.build.version.release_or_preview_display  u:object_r:build_prop:s0 exact string
++ro.system.build.version.sdk_full             u:object_r:build_prop:s0 exact string
++ro.system_ext.build.version.sdk_full         u:object_r:build_prop:s0 exact string
++ro.product.build.version.sdk_full            u:object_r:build_prop:s0 exact string
++ro.system_dlkm.build.version.sdk_full        u:object_r:build_prop:s0 exact string
++ro.vendor.build.version.sdk_full             u:object_r:build_vendor_prop:s0 exact string
++ro.vendor_dlkm.build.version.sdk_full        u:object_r:build_vendor_prop:s0 exact string
++ro.odm.build.version.sdk_full                u:object_r:build_odm_prop:s0 exact string
+-- 
+2.47.3
+

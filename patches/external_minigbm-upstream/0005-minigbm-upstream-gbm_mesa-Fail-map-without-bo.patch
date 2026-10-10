@@ -1,0 +1,32 @@
+From f4262861ec915cedc36a758e5b827f9b918d0b86 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 5/7] minigbm-upstream: gbm_mesa: Fail map without bo
+
+gbm_mesa_bo_import() leaves gbm_bo NULL when the import fails. Return
+MAP_FAILED instead of passing it to the wrapper.
+
+Assisted-by: LLM
+Change-Id: I1be68851c839488b386d658fcb97a558370e9c8d
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index ee379cc..aab88fb 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -526,6 +526,10 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ 		s_width = 4096;
+ 	}
+ 
++	/* Left NULL by a failed import. */
++	if (priv->gbm_bo == nullptr)
++		return MAP_FAILED;
++
+ 	wr->map(priv->gbm_bo, s_width, s_height, &buf, &vma->priv);
+ 
+ 	return buf;
+-- 
+2.47.3
+

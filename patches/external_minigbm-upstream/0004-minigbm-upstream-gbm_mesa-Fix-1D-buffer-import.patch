@@ -1,0 +1,59 @@
+From ecdeae20b6b22ca83a53d5a29a049b17ca6689e9 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 4/7] minigbm-upstream: gbm_mesa: Fix 1D buffer import
+
+1D buffers (BLOB, and formats gbm cannot allocate) are allocated as R8
+textures 4096 pixels wide. Import and map them with that geometry and a
+4096 pitch: described as width x 1, Mesa refuses the import ("WSI pitch
+too small") and CPU locks map nothing.
+
+Assisted-by: LLM
+Change-Id: Icbc990559a204a06c6a762b0be65acc0a8c0d05b
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 4bc943e..ee379cc 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -464,10 +464,21 @@ int gbm_mesa_bo_import(struct bo *bo, struct drv_import_fd_data *data)
+ 			s_height = 1;
+ 			s_format = DRM_FORMAT_R8;
+ 		}
++		/*
++		 * 1D buffers are allocated as 4096-wide R8 textures: import them
++		 * with that geometry and pitch. For a multi-planar format
++		 * allocated as 1D, strides[0] is the pitch of its first plane.
++		 */
++		uint32_t s_stride = data->strides[0];
++		if (s_format == DRM_FORMAT_R8 && s_height == 1) {
++			s_height = DIV_ROUND_UP(s_width, 4096);
++			s_width = 4096;
++			s_stride = 4096;
++		}
+ 
+ 		priv->drv = drv;
+ 		priv->gbm_bo = wr->import(drv->gbm_dev, data->fds[0], s_width, s_height,
+-					  data->strides[0], data->format_modifier, s_format);
++					  s_stride, data->format_modifier, s_format);
+ 	}
+ 
+ 	bo->priv = priv;
+@@ -507,6 +518,12 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ 	if (wr->get_gbm_format(s_format) == 0) {
+ 		s_width = bo->meta.total_size;
+ 		s_height = 1;
++		s_format = DRM_FORMAT_R8;
++	}
++	/* Same geometry as the allocation, see gbm_mesa_bo_create(). */
++	if (s_format == DRM_FORMAT_R8 && s_height == 1) {
++		s_height = DIV_ROUND_UP(s_width, 4096);
++		s_width = 4096;
+ 	}
+ 
+ 	wr->map(priv->gbm_bo, s_width, s_height, &buf, &vma->priv);
+-- 
+2.47.3
+

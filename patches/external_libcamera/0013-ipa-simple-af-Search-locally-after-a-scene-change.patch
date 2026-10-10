@@ -1,0 +1,185 @@
+From 9042de4c114dfb4c3fc75d68953967d425cb9892 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:48:26 +0200
+Subject: [PATCH 13/31] ipa: simple: af: Search locally after a scene change
+
+A full sweep after every scene change makes the lens hunt visibly, in
+video and whenever something moves in front of the camera.
+
+After a scene change, which now has to last longer (15 frames) and be
+followed by a steadier scene (10 frames), probe one step on each side
+of the current position and climb towards the sharper one, refining
+at the end. Stay put if neither side is better. The full sweep remains
+for the first focus.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/af.cpp | 82 ++++++++++++++++++++++++++++----
+ src/ipa/simple/algorithms/af.h   |  6 +++
+ 2 files changed, 79 insertions(+), 9 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+index 1c8c9fd3..e52597d9 100644
+--- a/src/ipa/simple/algorithms/af.cpp
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -6,7 +6,8 @@
+  * frame (SwIspStats::sharpness). The lens is swept over its range in coarse
+  * steps, stopping once past the peak, then around the best position in fine
+  * steps, and parked on the sharpest one. A lasting change of the contrast
+- * (the scene has changed) followed by a steady scene starts a new sweep.
++ * or of the brightness (the scene has changed) followed by a steady scene
++ * starts a local search around the current position, see startClimb().
+  */
+ 
+ #include "af.h"
+@@ -40,10 +41,12 @@ static constexpr double kFallRatio = 0.7;
+  * out of focus, is about the same.
+  */
+ static constexpr double kChangeRatio = 0.25;
+-static constexpr unsigned int kChangedFrames = 8;
++static constexpr unsigned int kChangedFrames = 15;
+ /* The scene is steady when both vary less than this, frame to frame */
+ static constexpr double kSteadyRatio = 0.08;
+-static constexpr unsigned int kSteadyFrames = 5;
++static constexpr unsigned int kSteadyFrames = 10;
++/* A climb step must improve the contrast by this much to count */
++static constexpr double kClimbGain = 1.03;
+ 
+ int Af::configure(IPAContext &context,
+ 		  [[maybe_unused]] const IPAConfigInfo &configInfo)
+@@ -124,13 +127,74 @@ void Af::sweep(IPAContext &context, double sharpness)
+ 	LOG(IPASoftAf, Debug)
+ 		<< "Focused at " << bestPosition_ << ", contrast " << best_;
+ 
++	finish(context);
++}
++
++/*
++ * After a scene change, search around the current position rather than
++ * sweeping the whole range: probe one step on each side, climb towards the
++ * sharper one while the contrast grows, and stay put if neither side is
++ * better. The lens moves little when the subject distance has not changed,
++ * which matters for video.
++ */
++void Af::startClimb(IPAContext &context, double sharpness)
++{
++	const AfConfiguration &af = context.configuration.af;
++
++	state_ = State::Climb;
++	climbStart_ = position_;
++	climbDirection_ = 1;
++	step_ = std::max((af.max - af.min) / kCoarseSteps / 2, 1);
++	best_ = sharpness;
++	bestPosition_ = position_;
++
++	if (position_ + step_ > af.max)
++		climbDirection_ = -1;
++	moveTo(context, position_ + climbDirection_ * step_);
++}
++
++void Af::climb(IPAContext &context, double sharpness)
++{
++	const AfConfiguration &af = context.configuration.af;
++
++	if (sharpness > best_ * kClimbGain) {
++		best_ = sharpness;
++		bestPosition_ = position_;
++
++		int32_t next = position_ + climbDirection_ * step_;
++		if (next >= af.min && next <= af.max) {
++			moveTo(context, next);
++			return;
++		}
++	} else if (bestPosition_ == climbStart_ && climbDirection_ == 1 &&
++		   climbStart_ - step_ >= af.min) {
++		/* The first probe did not help: try the other side. */
++		climbDirection_ = -1;
++		moveTo(context, climbStart_ - step_);
++		return;
++	}
++
++	if (bestPosition_ == climbStart_) {
++		LOG(IPASoftAf, Debug) << "Still focused at " << climbStart_;
++		finish(context);
++		return;
++	}
++
++	/* Refine around the best step. */
++	startSweep(context, State::Fine, bestPosition_ - step_,
++		   std::min(bestPosition_ + step_, af.max),
++		   std::max(step_ / 3, 1));
++}
++
++void Af::finish(IPAContext &context)
++{
+ 	state_ = State::Focused;
+ 	reference_ = best_;
+ 	last_ = best_;
+-	/* Taken from the first frame at the final position, see watch(). */
+-	referenceBrightness_ = 0.0;
+ 	changed_ = 0;
+ 	steady_ = 0;
++	/* Taken from the first frame at the final position, see watch(). */
++	referenceBrightness_ = 0.0;
+ 	moveTo(context, bestPosition_);
+ }
+ 
+@@ -153,13 +217,10 @@ void Af::watch(IPAContext &context, double sharpness, double brightness)
+ 	lastBrightness_ = brightness;
+ 
+ 	if (changed_ >= kChangedFrames && steady_ >= kSteadyFrames) {
+-		const AfConfiguration &af = context.configuration.af;
+-
+ 		LOG(IPASoftAf, Debug)
+ 			<< "Scene changed, contrast " << reference_
+ 			<< " -> " << sharpness;
+-		startSweep(context, State::Coarse, af.min, af.max,
+-			   (af.max - af.min) / kCoarseSteps);
++		startClimb(context, sharpness);
+ 		return;
+ 	}
+ 
+@@ -211,6 +272,9 @@ void Af::process(IPAContext &context,
+ 	case State::Fine:
+ 		sweep(context, sharpness);
+ 		break;
++	case State::Climb:
++		climb(context, sharpness);
++		break;
+ 	case State::Focused:
+ 		if (!referenceBrightness_) {
+ 			referenceBrightness_ = brightness;
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+index 15c55e66..91bfa01e 100644
+--- a/src/ipa/simple/algorithms/af.h
++++ b/src/ipa/simple/algorithms/af.h
+@@ -29,6 +29,7 @@ private:
+ 		Waiting,
+ 		Coarse,
+ 		Fine,
++		Climb,
+ 		Focused,
+ 	};
+ 
+@@ -36,6 +37,9 @@ private:
+ 	void startSweep(IPAContext &context, State state, int32_t from,
+ 			int32_t to, int32_t step);
+ 	void sweep(IPAContext &context, double sharpness);
++	void startClimb(IPAContext &context, double sharpness);
++	void climb(IPAContext &context, double sharpness);
++	void finish(IPAContext &context);
+ 	void watch(IPAContext &context, double sharpness, double brightness);
+ 
+ 	State state_;
+@@ -47,6 +51,8 @@ private:
+ 	int32_t bestPosition_;
+ 	double best_;
+ 	unsigned int falling_;
++	int32_t climbStart_;
++	int32_t climbDirection_;
+ 
+ 	double reference_;
+ 	double last_;
+-- 
+2.47.3
+

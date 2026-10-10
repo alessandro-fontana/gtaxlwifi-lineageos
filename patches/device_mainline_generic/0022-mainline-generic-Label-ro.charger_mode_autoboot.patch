@@ -1,0 +1,29 @@
+From 64bb2bc347357ed7fdc914b7bfc95865bdebdc1b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 22/33] mainline/generic: Label ro.charger_mode_autoboot
+
+healthd reads it in charger mode, but no property_contexts labels it, so
+charger_vendor gets a default_prop denial at every heartbeat. Use
+charger_config_prop like the other charger configuration properties.
+
+Assisted-by: LLM
+Change-Id: I937461507b4f10a5ea87668504f0f6623cf765e7
+---
+ sepolicy/private/property_contexts | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sepolicy/private/property_contexts b/sepolicy/private/property_contexts
+index c53723f..319fa5d 100644
+--- a/sepolicy/private/property_contexts
++++ b/sepolicy/private/property_contexts
+@@ -9,3 +9,6 @@ ro.system_dlkm.build.version.sdk_full        u:object_r:build_prop:s0 exact stri
+ ro.vendor.build.version.sdk_full             u:object_r:build_vendor_prop:s0 exact string
+ ro.vendor_dlkm.build.version.sdk_full        u:object_r:build_vendor_prop:s0 exact string
+ ro.odm.build.version.sdk_full                u:object_r:build_odm_prop:s0 exact string
++
++# Read by healthd in charger mode.
++ro.charger_mode_autoboot u:object_r:charger_config_prop:s0 exact bool
+-- 
+2.47.3
+

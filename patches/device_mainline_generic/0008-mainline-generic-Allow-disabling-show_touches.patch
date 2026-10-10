@@ -1,0 +1,42 @@
+From 6e6fd7fcaf4695ec4bee99518aaf2d4c41d3d3ce Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 08/33] mainline/generic: Allow disabling show_touches
+
+device_generic_settings turns on "show taps" at every boot from the su
+domain, a debugging aid for PCs and VMs. Add
+TARGET_GENERIC_SHOW_TOUCHES (default true) so that devices can opt out.
+
+Assisted-by: LLM
+Change-Id: Ida49687362ea7675a5f7e1156f9011da1f97df0f
+---
+ device.mk | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index 058d2f1..9ca4c58 100644
+--- a/device.mk
++++ b/device.mk
+@@ -133,11 +133,17 @@ PRODUCT_PACKAGES += \
+ PRODUCT_PACKAGES += \
+     console_override.rc \
+     device_generic_logging.rc \
+-    device_generic_settings.rc \
+-    device_generic_settings.sh \
+     hal_services.rc \
+     init_dev_config_override.rc
+ 
++# device_generic_settings turns on "show taps" at every boot.
++TARGET_GENERIC_SHOW_TOUCHES ?= true
++ifeq ($(TARGET_GENERIC_SHOW_TOUCHES),true)
++PRODUCT_PACKAGES += \
++    device_generic_settings.rc \
++    device_generic_settings.sh
++endif
++
+ PRODUCT_PACKAGES += \
+     zram.rc
+ 
+-- 
+2.47.3
+

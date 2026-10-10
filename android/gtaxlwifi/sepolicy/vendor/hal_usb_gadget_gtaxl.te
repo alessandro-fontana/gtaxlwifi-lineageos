@@ -1,7 +1,0 @@
-# USB tethering (§68.11). The gadget HAL (libpixelusb) reads
-# vendor.usb.rndis.config for the name of the RNDIS function in configfs
-# (rndis.gs4, set by init.mainline.usb.rc). device/mainline/common defines
-# vendor_usb_prop and lets vendor_init write it, but lets nobody read it:
-# the HAL fell back to gsi.rndis, which does not exist, and activation
-# failed. A generic defect, candidate for upstream (05 §12).
-get_prop(hal_usb_gadget_default, vendor_usb_prop)

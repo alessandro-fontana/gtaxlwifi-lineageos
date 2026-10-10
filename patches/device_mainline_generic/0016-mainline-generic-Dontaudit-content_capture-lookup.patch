@@ -1,0 +1,27 @@
+From bad06543df751661056df09dd03041afbfce3085 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 16/33] mainline/generic: Dontaudit content_capture lookup
+
+Isolated processes cannot find content_capture by design.
+
+Assisted-by: LLM
+Change-Id: I635c4ca3ca2886968414ff7611b6a11b886f255e
+---
+ sepolicy/private/dontaudit.te | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sepolicy/private/dontaudit.te b/sepolicy/private/dontaudit.te
+index b1728e2..8924fdf 100644
+--- a/sepolicy/private/dontaudit.te
++++ b/sepolicy/private/dontaudit.te
+@@ -5,3 +5,6 @@ dontaudit kernel device:dir { write add_name remove_name };
+ dontaudit kernel device:blk_file { create setattr unlink };
+ # Unset properties without a context (vendor.display.*, persist.vendor.audio.*).
+ dontaudit { surfaceflinger audioserver } vendor_default_prop:file { getattr open read map };
++
++# Isolated processes cannot reach content_capture by design.
++dontaudit isolated_app_all content_capture_service:service_manager find;
+-- 
+2.47.3
+

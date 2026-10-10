@@ -1,0 +1,38 @@
+From f5f43e7d1eb0f5a85c54b4d695fb42b9008d05df Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 25/33] mainline/generic: sepolicy: Label scale_with_gpu
+
+Label vendor.hwc.drm.scale_with_gpu as vendor_hwc_drm_prop and let the
+composer read it.
+
+Assisted-by: LLM
+Change-Id: Ia8b0176862fec1ebee8d358e3a3fbd2721123617
+---
+ sepolicy/vendor/hal_sysfs.te      | 1 +
+ sepolicy/vendor/property_contexts | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/sepolicy/vendor/hal_sysfs.te b/sepolicy/vendor/hal_sysfs.te
+index b2c00b6..e7beb8d 100644
+--- a/sepolicy/vendor/hal_sysfs.te
++++ b/sepolicy/vendor/hal_sysfs.te
+@@ -3,6 +3,7 @@ r_dir_file(hal_graphics_composer_default, sysfs_gpu)
+ r_dir_file(hal_usb_gadget_default, sysfs_udc)
+ 
+ get_prop(hal_usb_gadget_default, usb_control_prop)
++get_prop(hal_graphics_composer_default, vendor_hwc_drm_prop)
+ 
+ # Unset persist.device_config.* flags without a context
+ dontaudit { hal_graphics_allocator_default hal_graphics_composer_default } default_prop:file { getattr open read map };
+diff --git a/sepolicy/vendor/property_contexts b/sepolicy/vendor/property_contexts
+index bbec28e..3b4e3ab 100644
+--- a/sepolicy/vendor/property_contexts
++++ b/sepolicy/vendor/property_contexts
+@@ -1,2 +1,3 @@
+ # Display
+ ro.vendor.get_display_ppi.		u:object_r:vendor_get_display_ppi_prop:s0
++vendor.hwc.drm.scale_with_gpu		u:object_r:vendor_hwc_drm_prop:s0 exact int
+-- 
+2.47.3
+

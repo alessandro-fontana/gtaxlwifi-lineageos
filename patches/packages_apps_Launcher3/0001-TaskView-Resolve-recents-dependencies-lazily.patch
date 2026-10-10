@@ -1,0 +1,35 @@
+From 8856e6870a63ea67b78c629685caec9827bfd2f2 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:42 +0200
+Subject: [PATCH] TaskView: Resolve recents dependencies lazily
+
+RecentsView only initializes RecentsDependencies when
+enable_refactor_task_thumbnail is on, and dispatcherProvider and
+coroutineScope are only used under that flag. Reading them eagerly made
+every TaskView inflation throw UninitializedPropertyAccessException with
+the flag off, crashing the launcher when opening recents.
+
+Assisted-by: LLM
+Change-Id: I1894cee73be25b92f9d646d9cffabffcc8e5c6db
+---
+ quickstep/src/com/android/quickstep/views/TaskView.kt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/quickstep/src/com/android/quickstep/views/TaskView.kt b/quickstep/src/com/android/quickstep/views/TaskView.kt
+index effda1c..ff2fac0 100644
+--- a/quickstep/src/com/android/quickstep/views/TaskView.kt
++++ b/quickstep/src/com/android/quickstep/views/TaskView.kt
+@@ -563,8 +563,8 @@ constructor(
+                 dispatcherProvider = RecentsDependencies.get(context),
+             )
+         } else null
+-    private val dispatcherProvider: DispatcherProvider = RecentsDependencies.get(context)
+-    private val coroutineScope: CoroutineScope = RecentsDependencies.get(context)
++    private val dispatcherProvider: DispatcherProvider by lazy { RecentsDependencies.get(context) }
++    private val coroutineScope: CoroutineScope by lazy { RecentsDependencies.get(context) }
+     private val coroutineJobs = mutableListOf<Job>()
+     private var taskDismissButton: FrameLayout? = null
+     private var taskDismissButtonAnimator: ObjectAnimator? = null
+-- 
+2.47.3
+

@@ -1,0 +1,158 @@
+From a5917f54cc076f2b5955479b490a02a505ec2cd0 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 10 Oct 2026 12:11:18 +0200
+Subject: [PATCH 34/35] android: Offer 1920x1080 above the stream size limit
+
+1920x1080 is a mandatory size, and CameraX requests it for the preview
+on some devices whatever the camera lists; the framework then rounds it
+to the nearest listed size, of another aspect ratio, and the preview is
+stretched. When streams are produced through a conversion and limited
+below 1920x1080, offer it anyway: configure the camera with the crop of
+the same aspect ratio and let the YUV post-processor scale it up.
+
+Assisted-by: LLM
+---
+ src/android/camera_capabilities.cpp    | 43 ++++++++++++++++++++++++--
+ src/android/camera_capabilities.h      |  3 ++
+ src/android/camera_device.cpp          |  3 ++
+ src/android/yuv/post_processor_yuv.cpp |  7 -----
+ 4 files changed, 47 insertions(+), 9 deletions(-)
+
+diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
+index 33675a59..003f8f35 100644
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -499,6 +499,16 @@ CameraCapabilities::initializeRawResolutions(const PixelFormat &pixelFormat)
+ 	return supportedResolutions;
+ }
+ 
++/* The largest size with the aspect ratio of size within bound, even sized. */
++static Size cropToAspectRatio(const Size &bound, const Size &size)
++{
++	if (static_cast<uint64_t>(size.width) * bound.height >
++	    static_cast<uint64_t>(size.height) * bound.width)
++		return { bound.width & ~1u, (bound.width * size.height / size.width) & ~1u };
++
++	return { (bound.height * size.width / size.height) & ~1u, bound.height & ~1u };
++}
++
+ /*
+  * Initialize the format conversion map to translate from Android format
+  * identifier to libcamera pixel formats and fill in the list of supported
+@@ -779,6 +789,28 @@ int CameraCapabilities::initializeStreamConfigurations()
+ 			 */
+ 			resolutions = initializeYUVResolutions(mappedFormat,
+ 							       cameraResolutions);
++
++			/*
++			 * Mandatory sizes above the stream limit, scaled up by
++			 * the conversion from the crop of the same aspect ratio
++			 * that the camera produces.
++			 */
++			if (!conversionMap_.count(androidFormat))
++				break;
++
++			for (const Size &res : camera3Resolutions) {
++				if (res.width <= maxRes.width &&
++				    res.height <= maxRes.height)
++					continue;
++
++				const Size source = cropToAspectRatio(maxRes, res);
++				if (std::find(resolutions.begin(), resolutions.end(),
++					      source) == resolutions.end())
++					continue;
++
++				upscaledSizes_[res] = source;
++				resolutions.push_back(res);
++			}
+ 			break;
+ 		}
+ 
+@@ -790,7 +822,7 @@ int CameraCapabilities::initializeStreamConfigurations()
+ 			 * \todo Avoid the need to configure the camera when
+ 			 * redesigning the configuration API.
+ 			 */
+-			cfg.size = res;
++			cfg.size = sourceSize(res);
+ 			int ret = camera_->configure(cameraConfig.get());
+ 			if (ret)
+ 				return ret;
+@@ -871,7 +903,8 @@ int CameraCapabilities::initializeStreamConfigurations()
+ 			 * use the same frame durations as collected for
+ 			 * the YUV/RGB streams.
+ 			 */
+-			if (androidFormat == HAL_PIXEL_FORMAT_YCbCr_420_888) {
++			if (androidFormat == HAL_PIXEL_FORMAT_YCbCr_420_888 &&
++			    !upscaledSizes_.count(res)) {
+ 				streamConfigurations_.push_back({
+ 					res, HAL_PIXEL_FORMAT_BLOB,
+ 					minFrameDuration, maxFrameDuration,
+@@ -1694,6 +1727,12 @@ PixelFormat CameraCapabilities::toPixelFormat(int format) const
+  * Check if we need to do software conversion via a post-processor
+  * for an Android format code
+  */
++Size CameraCapabilities::sourceSize(const Size &size) const
++{
++	auto it = upscaledSizes_.find(size);
++	return it == upscaledSizes_.end() ? size : it->second;
++}
++
+ bool CameraCapabilities::needConversion(int format) const
+ {
+ 	/* Not an error: most formats are produced without a conversion. */
+diff --git a/src/android/camera_capabilities.h b/src/android/camera_capabilities.h
+index a550c318..c373ee65 100644
+--- a/src/android/camera_capabilities.h
++++ b/src/android/camera_capabilities.h
+@@ -37,6 +37,8 @@ public:
+ 	unsigned int maxJpegBufferSize() const { return maxJpegBufferSize_; }
+ 	/* A JPEG size captured in a separate full resolution configuration */
+ 	bool isStillSize(const libcamera::Size &size) const;
++	/* The size the camera produces for a stream, scaled up if different */
++	libcamera::Size sourceSize(const libcamera::Size &size) const;
+ 	libcamera::PixelFormat stillFormat() const { return stillFormat_; }
+ 
+ 	std::unique_ptr<CameraMetadata> requestTemplateManual() const;
+@@ -80,6 +82,7 @@ private:
+ 	bool hasFlash_ = false;
+ 	libcamera::Size maxStreamSize_;
+ 	std::vector<libcamera::Size> stillSizes_;
++	std::map<libcamera::Size, libcamera::Size> upscaledSizes_;
+ 	libcamera::PixelFormat stillFormat_;
+ 	/* A focus lens driven by the IPA: Android's AF modes and one AF region */
+ 	bool afAvailable_ = false;
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index c214b842..b98b04a7 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -913,6 +913,9 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
+ 		 */
+ 		stream->usage |= GRALLOC_USAGE_HW_CAMERA_WRITE;
+ 
++		/* A size above the stream limit is scaled up from a smaller one. */
++		size = capabilities_.sourceSize(size);
++
+ 		/*
+ 		 * If a CameraStream with the same size and format as the
+ 		 * current stream has already been requested, associate the two.
+diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
+index 81c988be..1241aea7 100644
+--- a/src/android/yuv/post_processor_yuv.cpp
++++ b/src/android/yuv/post_processor_yuv.cpp
+@@ -67,13 +67,6 @@ int PostProcessorYuv::configure(const StreamConfiguration &inCfg,
+ 		}
+ 	}
+ 
+-	if (inCfg.size < outCfg.size) {
+-		LOG(YUV, Error) << "Up-scaling is not supported"
+-				<< " (from " << inCfg.size
+-				<< " to " << outCfg.size << ")";
+-		return -EINVAL;
+-	}
+-
+ 	calculateLengths(inCfg, outCfg);
+ 	return 0;
+ }
+-- 
+2.47.3
+

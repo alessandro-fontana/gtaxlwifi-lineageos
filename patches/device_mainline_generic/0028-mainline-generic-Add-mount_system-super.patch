@@ -1,0 +1,64 @@
+From c184d663b9b6a12625f6860b145bc15995758f65 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 28/33] mainline/generic: Add mount_system=super
+
+Probing mounts every filesystem it finds and remounts it read-write,
+which writes to partitions that may not belong to Android, such as the
+calibration and modem partitions of a vendor. mount_system=super probes
+only the logical partitions of super and records the other block
+devices by name without mounting them.
+
+Assisted-by: LLM
+Change-Id: I1cac49793b3244c3da319dc161beaf7d663d0feb
+---
+ services/generic_init/mount_handler.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/services/generic_init/mount_handler.cpp b/services/generic_init/mount_handler.cpp
+index 8e3bccc..5965a26 100644
+--- a/services/generic_init/mount_handler.cpp
++++ b/services/generic_init/mount_handler.cpp
+@@ -211,6 +211,8 @@ const std::unordered_map<std::string, MountFirmwareParam> kStringToMountFirmware
+ const std::unordered_map<std::string, MountSystemParam> kStringToMountSystemParamMap = {
+     {"std_parts", MountSystemParam::STANDARD_PARTITIONS_WITH_PARTNAME},
+     {"blk_devices", MountSystemParam::ANY_BLOCK_DEVICES_AS_PARTITION},
++    // As blk_devices, but only logical partitions from super are probed.
++    {"super", MountSystemParam::ANY_BLOCK_DEVICES_AS_PARTITION},
+     {"imgs", MountSystemParam::IMAGES},
+     {"imgs_ram", MountSystemParam::IMAGES_COPY_TO_RAM},
+ };
+@@ -224,6 +226,10 @@ const std::unordered_map<std::string, MountUserdataParam> kStringToMountUserdata
+ 
+ MountFirmwareParam param_mount_firmware = MountFirmwareParam::ALL_POSSIBLE_DIRS;
+ MountSystemParam param_mount_system = MountSystemParam::STANDARD_PARTITIONS_WITH_PARTNAME;
++// mount_system=super: never mount physical block devices to probe them.
++// Probing remounts them read-write, writing to partitions that may not
++// belong to Android at all.
++bool param_probe_only_super = false;
+ MountUserdataParam param_mount_userdata = MountUserdataParam::STANDARD_PARTITIONS_WITH_PARTNAME;
+ 
+ constexpr char kFirmwareFstabMountPoint[] = "/mnt/vendor/firmware";
+@@ -318,6 +324,7 @@ void ParseConfig(void) {
+     if (ret) {
+         if (kStringToMountSystemParamMap.contains(tmp)) {
+             param_mount_system = kStringToMountSystemParamMap.at(tmp);
++            param_probe_only_super = tmp == "super";
+         } else {
+             LOG(ERROR) << "Parameter " << kMountSystemParam << " value is invalid";
+         }
+@@ -738,6 +745,11 @@ void OnBlockDeviceAdd(const android::init::Uevent& uevent, const std::string& de
+     info.partuuid = uevent.partition_uuid;
+     info.links = links;
+     info.is_partition = std::isdigit(static_cast<unsigned char>(info.devname.back()));
++    // Only recorded, for by-name lookups from the addon fstab.
++    if (param_probe_only_super && !StartsWith(info.devname, "dm-")) {
++        block_devices->insert({devpath, std::make_shared<BlockDeviceInfo>(info)});
++        return;
++    }
+     if (!ParseApfsBlockDevice(&info)) ParseBlockDevice(&info);
+     block_devices->insert({devpath, std::make_shared<BlockDeviceInfo>(info)});
+     UpdateMountInfo(block_devices->at(devpath));
+-- 
+2.47.3
+

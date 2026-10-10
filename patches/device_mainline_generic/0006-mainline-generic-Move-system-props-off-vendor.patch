@@ -1,0 +1,52 @@
+From 22454f5daffb28c014d809f180d86a888889c97c Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 06/33] mainline/generic: Move system props off vendor
+
+vendor_init is not allowed to set sys.use_memfd (use_memfd_prop) or
+persist.bluetooth.a2dp_aac.vbr_supported (bluetooth_prop). Set both in
+the system build.prop instead of use_memfd.rc and vendor.prop.
+
+Assisted-by: LLM
+Change-Id: I1351beeb944e23d22ae225580d350e867285e1ac
+---
+ configs/properties/vendor.prop | 1 -
+ device.mk                      | 6 +++++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/configs/properties/vendor.prop b/configs/properties/vendor.prop
+index 45afd94..bc33051 100644
+--- a/configs/properties/vendor.prop
++++ b/configs/properties/vendor.prop
+@@ -7,7 +7,6 @@
+ # MAJOR_CLASS: 0x01 -> 1 (Computer)
+ # MINOR_CLASS: 0x04 -> 4 (Desktop workstation)
+ bluetooth.device.class_of_device=26,1,4
+-persist.bluetooth.a2dp_aac.vbr_supported=true
+ 
+ # Display
+ ro.surface_flinger.enable_frame_rate_override=false
+diff --git a/device.mk b/device.mk
+index d9d6b29..14d0e0c 100644
+--- a/device.mk
++++ b/device.mk
+@@ -139,7 +139,6 @@ PRODUCT_PACKAGES += \
+     init_dev_config_override.rc
+ 
+ PRODUCT_PACKAGES += \
+-    use_memfd.rc \
+     zram.rc
+ 
+ PRODUCT_PACKAGES += \
+@@ -217,3 +216,8 @@ $(call inherit-product, packages/modules/Virtualization/apex/product_packages.mk
+ # Wi-Fi
+ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/configs/wifi/wpa_supplicant.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant.conf
++
++# vendor_init is not allowed to set these.
++PRODUCT_SYSTEM_PROPERTIES += \
++    sys.use_memfd=true \
++    persist.bluetooth.a2dp_aac.vbr_supported=true
+-- 
+2.47.3
+

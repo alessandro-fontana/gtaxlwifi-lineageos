@@ -1,0 +1,36 @@
+From 019a4eff4a32e24e1a29e2c6188c8666138e5e27 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 12:20:39 +0200
+Subject: [PATCH 1/8] DecodeInterface: Use 3 MB input buffers for 1080p
+
+Each input buffer is imported whole into the decoder's IOVA space, one per
+V4L2 OUTPUT buffer. Sixteen 16 MB buffers exceed the 256 MB the Exynos MFC
+can address; 3 MB is the MFC's own stream buffer size.
+
+This lowers the size raised by "Raise the input buffer size for 1080p to
+16MB".
+
+Assisted-by: LLM
+Change-Id: I01b64055b4fe5b93a7760524f6fc6d52f4296dde
+---
+ components/DecodeInterface.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index 558c0ea..f1eb42a 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -26,7 +26,9 @@ constexpr size_t k4KArea = 3840 * 2160;
+ // when using higher bitrates, like 1Mb/s on slower devices. Also, this brings up compability
+ // with the Chrome browser as it is using 2MB buffer size for a 1080p stream, ref:
+ // https://source.chromium.org/chromium/chromium/src/+/main:media/gpu/gpu_video_encode_accelerator_helpers.cc;l=25
+-constexpr size_t kInputBufferSizeFor1080p = 16 * 1024 * 1024;  // 16MB
++// Each input buffer is mapped whole into the decoder's IOVA space: 16 x 16 MB
++// exceed the 256 MB the Exynos MFC can address. 3 MB is its own stream buffer.
++constexpr size_t kInputBufferSizeFor1080p = 3 * 1024 * 1024;  // 3MB
+ // Input bitstream buffer size for up to 4k streams.
+ constexpr size_t kInputBufferSizeFor4K = 4 * kInputBufferSizeFor1080p;
+ 
+-- 
+2.47.3
+

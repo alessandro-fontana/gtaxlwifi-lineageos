@@ -1,0 +1,40 @@
+From 9d9ef793636b09d1978d002a2cb85c700a5755f7 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:15:42 +0200
+Subject: [PATCH 3/3] SystemUI: Catch desktop-first listener failure
+
+DesktopMode is provided when canEnterDesktopModeOrShowAppHandle() is
+true, but registerDesktopFirstListener() throws unless
+canEnterDesktopMode() and ENABLE_DESKTOP_FIRST_LISTENER are both true.
+On devices that only support the app handle the exception escaped the
+DesktopFirstRepository constructor and crashed SystemUI on every boot.
+
+Assisted-by: LLM
+Change-Id: I74ce9c53ac2ebf6d431b64180315103c0534338b
+---
+ .../android/systemui/desktop/DesktopFirstRepository.kt   | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt b/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
+index c8c03aacb..5153ddd80 100644
+--- a/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
++++ b/packages/SystemUI/src/com/android/systemui/desktop/DesktopFirstRepository.kt
+@@ -38,7 +38,14 @@ class DesktopFirstRepository @Inject constructor(desktopMode: Optional<DesktopMo
+     private val _isDisplayDesktopFirst: MutableMap<Int, Boolean> = mutableMapOf()
+ 
+     init {
+-        desktopMode.ifPresent { desktopMode.get().registerDesktopFirstListener(this) }
++        desktopMode.ifPresent {
++            try {
++                it.registerDesktopFirstListener(this)
++            } catch (e: UnsupportedOperationException) {
++                // Thrown when the app handle is supported but desktop mode
++                // itself is not: there is nothing to track.
++            }
++        }
+     }
+ 
+     /**
+-- 
+2.47.3
+

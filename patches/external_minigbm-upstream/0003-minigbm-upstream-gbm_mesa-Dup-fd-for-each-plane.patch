@@ -1,0 +1,36 @@
+From 960420d591991ae6b31b693df9f7eac86b517a47 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 3/7] minigbm-upstream: gbm_mesa: Dup fd for each plane
+
+Every plane stored the same fd in its own UniqueFd, so the fd was closed
+once per plane. The extra close() can hit a number meanwhile reused by
+another thread, which fdsan aborts on.
+
+Assisted-by: LLM
+Change-Id: I98158bb3701ec84d3093a86e13c6612ac4028e88
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index fcc51c8..4bc943e 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -426,9 +426,10 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 
+ 	auto priv = new GbmMesaBoPriv();
+ 	bo->inode = drv_get_inode(alloc_args.out_fd);
+-	for (size_t plane = 0; plane < bo->meta.num_planes; plane++) {
+-		priv->fds[plane] = UniqueFd(alloc_args.out_fd);
+-	}
++	/* One fd per plane: a shared one would be closed once per plane. */
++	priv->fds[0] = UniqueFd(alloc_args.out_fd);
++	for (size_t plane = 1; plane < bo->meta.num_planes; plane++)
++		priv->fds[plane] = UniqueFd(dup(alloc_args.out_fd));
+ 
+ 	priv->map_stride = alloc_args.out_map_stride;
+ 	bo->meta.format_modifier = alloc_args.out_modifier;
+-- 
+2.47.3
+

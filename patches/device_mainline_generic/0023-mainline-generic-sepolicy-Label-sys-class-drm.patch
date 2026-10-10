@@ -1,0 +1,58 @@
+From db6a0860d76e7db8be91deab195a7fc1011f3472 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 23/33] mainline/generic: sepolicy: Label /sys/class/drm
+
+Label /sys/class/drm as sysfs_gpu and let gralloc, the composer,
+get_display_ppi and hardware_detect read it.
+
+Assisted-by: LLM
+Change-Id: Ic570126a844f0e16e8516a7708a90b8649e439ad
+---
+ sepolicy/vendor/genfs_contexts            | 1 +
+ sepolicy/vendor/hal_sysfs.te              | 3 +++
+ sepolicy/vendor/vendor_get_display_ppi.te | 2 ++
+ sepolicy/vendor/vendor_hardware_detect.te | 2 ++
+ 4 files changed, 8 insertions(+)
+ create mode 100644 sepolicy/vendor/genfs_contexts
+
+diff --git a/sepolicy/vendor/genfs_contexts b/sepolicy/vendor/genfs_contexts
+new file mode 100644
+index 0000000..fba62c8
+--- /dev/null
++++ b/sepolicy/vendor/genfs_contexts
+@@ -0,0 +1 @@
++genfscon sysfs /class/drm u:object_r:sysfs_gpu:s0
+diff --git a/sepolicy/vendor/hal_sysfs.te b/sepolicy/vendor/hal_sysfs.te
+index df5f00b..ec02001 100644
+--- a/sepolicy/vendor/hal_sysfs.te
++++ b/sepolicy/vendor/hal_sysfs.te
+@@ -1,2 +1,5 @@
++r_dir_file(hal_graphics_allocator_default, sysfs_gpu)
++r_dir_file(hal_graphics_composer_default, sysfs_gpu)
++
+ # Unset persist.device_config.* flags without a context
+ dontaudit { hal_graphics_allocator_default hal_graphics_composer_default } default_prop:file { getattr open read map };
+diff --git a/sepolicy/vendor/vendor_get_display_ppi.te b/sepolicy/vendor/vendor_get_display_ppi.te
+index d3d42c4..d8463b8 100644
+--- a/sepolicy/vendor/vendor_get_display_ppi.te
++++ b/sepolicy/vendor/vendor_get_display_ppi.te
+@@ -5,3 +5,5 @@ init_daemon_domain(vendor_get_display_ppi);
+ 
+ get_prop(vendor_get_display_ppi, vendor_hwc_drm_prop)
+ set_prop(vendor_get_display_ppi, vendor_get_display_ppi_prop)
++
++r_dir_file(vendor_get_display_ppi, sysfs_gpu)
+diff --git a/sepolicy/vendor/vendor_hardware_detect.te b/sepolicy/vendor/vendor_hardware_detect.te
+index 80c15ef..ed303e8 100644
+--- a/sepolicy/vendor/vendor_hardware_detect.te
++++ b/sepolicy/vendor/vendor_hardware_detect.te
+@@ -7,3 +7,5 @@ allow vendor_hardware_detect gpu_device:dir r_dir_perms;
+ allow vendor_hardware_detect gpu_device:chr_file { getattr ioctl map open read write };
+ 
+ r_dir_file(vendor_hardware_detect, audio_device)
++
++r_dir_file(vendor_hardware_detect, sysfs_gpu)
+-- 
+2.47.3
+

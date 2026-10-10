@@ -1,0 +1,43 @@
+From 56776e24d9529954a8318afb00c6316b36b0c5e1 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 07/33] mainline/generic: Drop overlay_remounter override
+
+The system overlay_remounter now handles nested and read-write overlay
+mounts, so the vendor override is no longer needed.
+
+Requires the matching system/core overlay_remounter changes.
+
+Assisted-by: LLM
+Change-Id: I7dccea3a49b1b10a64e82de3a637fc4058b509b5
+---
+ configs/fstab/fstab.generic_init.addon.basic | 1 -
+ device.mk                                    | 3 +--
+ 2 files changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/configs/fstab/fstab.generic_init.addon.basic b/configs/fstab/fstab.generic_init.addon.basic
+index 14a8a40..4533e63 100644
+--- a/configs/fstab/fstab.generic_init.addon.basic
++++ b/configs/fstab/fstab.generic_init.addon.basic
+@@ -1,4 +1,3 @@
+ #<src>				<mnt_point>				<type>		<mnt_flags and options>												<fs_mgr_flags>
+-/vendor/xbin/overlay_remounter_override	/system/xbin/overlay_remounter	none		bind														nofail
+ overlay				/system/system_ext/etc/init		overlay		ro,lowerdir=/vendor/etc/overlay-system_ext-etc-init:/system_ext/etc/init					nofail
+ overlay				/vendor					overlay		rw,lowerdir=/vendor,upperdir=/mnt/vendor/vendor-overlayfs-upperdir,workdir=/mnt/vendor/vendor-overlayfs-workdir	nofail
+diff --git a/device.mk b/device.mk
+index 14d0e0c..058d2f1 100644
+--- a/device.mk
++++ b/device.mk
+@@ -142,8 +142,7 @@ PRODUCT_PACKAGES += \
+     zram.rc
+ 
+ PRODUCT_PACKAGES += \
+-    hardware_detect \
+-    overlay_remounter_override
++    hardware_detect
+ 
+ $(call soong_config_set,mainline_common_libinit,set_properties_from,both)
+ 
+-- 
+2.47.3
+

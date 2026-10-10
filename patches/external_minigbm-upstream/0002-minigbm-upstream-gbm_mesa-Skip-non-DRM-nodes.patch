@@ -1,0 +1,36 @@
+From 3b602b3bf0dd46ace3eb695dd74b314b4ee3d337 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 2/7] minigbm-upstream: gbm_mesa: Skip non-DRM nodes
+
+drmGetVersion() returns NULL for a node that opens but is not a DRM
+device, e.g. one masked with a symlink to /dev/null. Log and skip it
+instead of dereferencing NULL.
+
+Assisted-by: LLM
+Change-Id: I3345ca238a90e825cc0e63b49c62df561e881e24
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index bbdde72..fcc51c8 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -189,6 +189,13 @@ int open_drm_dev(bool card_node, std::function<bool(int, bool, std::string)> fou
+ 
+ 		drmVersionPtr drm_version;
+ 		drm_version = drmGetVersion(fd);
++		if (!drm_version) {
++			/* Not a DRM device, e.g. masked with a symlink to /dev/null */
++			drv_loge("Unable to get DRM version for %s with error %s",
++				 glob_buf.gl_pathv[i], strerror(errno));
++			close(fd);
++			continue;
++		}
+ 		std::string drm_name(drm_version->name);
+ 		drmFreeVersion(drm_version);
+ 
+-- 
+2.47.3
+

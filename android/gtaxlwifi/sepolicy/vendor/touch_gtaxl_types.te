@@ -1,3 +1,0 @@
-# Type for the touchscreen's sysfs attributes only (§50.9): the i2c device
-# directory, not generic sysfs (§39.1, rule 3).
-type sysfs_touch_gtaxl, fs_type, sysfs_type;

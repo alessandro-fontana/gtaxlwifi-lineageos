@@ -1,0 +1,30 @@
+From 14aa8f4626819321bdf5799d540175f6952dfdfb Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 24/33] mainline/generic: Allow usb gadget HAL UDC access
+
+Let the USB gadget HAL read the UDC nodes in sysfs and usb_control_prop
+(sys.usb.controller).
+
+Assisted-by: LLM
+Change-Id: I856023f0888f5426665922d9df97d673ebbf03fa
+---
+ sepolicy/vendor/hal_sysfs.te | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sepolicy/vendor/hal_sysfs.te b/sepolicy/vendor/hal_sysfs.te
+index ec02001..b2c00b6 100644
+--- a/sepolicy/vendor/hal_sysfs.te
++++ b/sepolicy/vendor/hal_sysfs.te
+@@ -1,5 +1,8 @@
+ r_dir_file(hal_graphics_allocator_default, sysfs_gpu)
+ r_dir_file(hal_graphics_composer_default, sysfs_gpu)
++r_dir_file(hal_usb_gadget_default, sysfs_udc)
++
++get_prop(hal_usb_gadget_default, usb_control_prop)
+ 
+ # Unset persist.device_config.* flags without a context
+ dontaudit { hal_graphics_allocator_default hal_graphics_composer_default } default_prop:file { getattr open read map };
+-- 
+2.47.3
+

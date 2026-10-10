@@ -1,0 +1,77 @@
+From 2de515e75825beb2a93ac492991c2ab7c80d8486 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 16:03:01 +0200
+Subject: [PATCH 24/31] ipa: simple: af: Read the lens range from the tuning
+ file
+
+The lens driver exposes its whole DAC range, but the useful travel of
+a module is a fraction of it, between its infinity and macro
+positions: 492 to 665 out of 0-1023 on the rear module of the Galaxy
+Tab A 10.1 (2016). Sweeping the whole range put only two coarse steps
+in the useful part.
+
+Read the lensMin and lensMax limits from the tuning file.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/af.cpp | 14 ++++++++++++++
+ src/ipa/simple/algorithms/af.h   |  8 ++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+index d6f066d7..f8c20ae9 100644
+--- a/src/ipa/simple/algorithms/af.cpp
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -58,9 +58,23 @@ static constexpr double kClimbGain = 1.03;
+ /* The central ninth of the frame, in 1/65535 units */
+ static constexpr std::array<uint16_t, 4> kDefaultWindow = { 21845, 21845, 21845, 21845 };
+ 
++int Af::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData)
++{
++	lensMin_ = tuningData["lensMin"].get<int32_t>(-1);
++	lensMax_ = tuningData["lensMax"].get<int32_t>(-1);
++	return 0;
++}
++
+ int Af::configure(IPAContext &context,
+ 		  [[maybe_unused]] const IPAConfigInfo &configInfo)
+ {
++	/* Sweep only the useful range: the driver's is the whole DAC. */
++	AfConfiguration &afConfig = context.configuration.af;
++	if (afConfig.enabled && lensMin_ >= 0 && lensMax_ > lensMin_) {
++		afConfig.min = std::max(afConfig.min, lensMin_);
++		afConfig.max = std::min(afConfig.max, lensMax_);
++	}
++
+ 	state_ = State::Waiting;
+ 	settle_ = kStartupFrames;
+ 	position_ = -1;
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+index 967448e8..180b2705 100644
+--- a/src/ipa/simple/algorithms/af.h
++++ b/src/ipa/simple/algorithms/af.h
+@@ -22,6 +22,7 @@ public:
+ 	Af() = default;
+ 	~Af() = default;
+ 
++	int init(IPAContext &context, const YamlObject &tuningData) override;
+ 	int configure(IPAContext &context,
+ 		      const IPAConfigInfo &configInfo) override;
+ 	void queueRequest(IPAContext &context, const uint32_t frame,
+@@ -84,6 +85,13 @@ private:
+ 	bool locked_;
+ 	/* The last coarse sweep saw no peak. */
+ 	bool failed_;
++
++	/*
++	 * From the tuning file: the useful lens range, from the module's
++	 * calibration (infinity and macro positions), with a margin.
++	 */
++	int32_t lensMin_ = -1;
++	int32_t lensMax_ = -1;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.47.3
+

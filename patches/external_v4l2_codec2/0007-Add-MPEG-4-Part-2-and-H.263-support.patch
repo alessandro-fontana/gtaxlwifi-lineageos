@@ -1,0 +1,812 @@
+From 5fc0557476541c8a767d7f6835b00ab10c894a79 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 2 Oct 2026 11:36:56 +0200
+Subject: [PATCH 7/8] Add MPEG-4 Part 2 and H.263 support
+
+Add c2.v4l2.{mpeg4,h263}.{decoder,encoder} for stateful V4L2 devices,
+enabled with ro.vendor.v4l2_codec2.{decoder,encoder}.supported.{mpeg4,h263}:
+
+- MPEG-4 profiles and levels are queried from the device. H.263 has no
+  V4L2 control for either: Baseline and levels 10 to 70 are assumed.
+- Decoder: a key frame is a VOL header or an intra VOP for MPEG-4, an
+  intra picture for H.263. Output delay of 8, as for VP8.
+- Encoder: MPEG-4 Simple, levels 0 to 5, max QP 31, the headers in front
+  of the first VOP as codec config data. H.263 Baseline, max QP 31.
+
+Assisted-by: LLM
+Change-Id: I20ec6e37439f37094360edbcb8b4f8d38707d479
+---
+ common/Common.cpp                             |  6 ++
+ common/EncodeHelpers.cpp                      | 49 ++++++++++
+ common/VideoTypes.cpp                         | 10 ++
+ .../v4l2_codec2/common/EncodeHelpers.h        | 17 ++++
+ .../include/v4l2_codec2/common/VideoTypes.h   |  5 +-
+ components/ComponentStore.cpp                 |  6 ++
+ components/DecodeInterface.cpp                | 34 +++++++
+ components/EncodeComponent.cpp                |  5 +-
+ components/EncodeInterface.cpp                | 69 +++++++++++++
+ .../v4l2_codec2/components/EncodeInterface.h  |  4 +
+ v4l2/V4L2ComponentCommon.cpp                  | 16 ++-
+ v4l2/V4L2ComponentStore.cpp                   | 12 +++
+ v4l2/V4L2Decoder.cpp                          | 18 ++++
+ v4l2/V4L2Device.cpp                           | 97 +++++++++++++++++++
+ v4l2/V4L2EncodeComponent.cpp                  |  7 +-
+ v4l2/V4L2Encoder.cpp                          | 34 +++++++
+ .../v4l2_codec2/v4l2/V4L2ComponentCommon.h    |  4 +
+ v4l2/include/v4l2_codec2/v4l2/V4L2Encoder.h   |  2 +
+ 18 files changed, 388 insertions(+), 7 deletions(-)
+
+diff --git a/common/Common.cpp b/common/Common.cpp
+index aba4a19..9803a19 100644
+--- a/common/Common.cpp
++++ b/common/Common.cpp
+@@ -47,6 +47,12 @@ bool isValidProfileForCodec(VideoCodec codec, C2Config::profile_t profile) {
+                 (profile <= C2Config::PROFILE_HEVC_3D_MAIN));
+     case VideoCodec::AV1:
+         return ((profile >= C2Config::PROFILE_AV1_0) && (profile <= C2Config::PROFILE_AV1_2));
++    case VideoCodec::MPEG4:
++        return ((profile >= C2Config::PROFILE_MP4V_SIMPLE) &&
++                (profile <= C2Config::PROFILE_MP4V_FGS));
++    case VideoCodec::H263:
++        return ((profile >= C2Config::PROFILE_H263_BASELINE) &&
++                (profile <= C2Config::PROFILE_H263_HIGH_LATENCY));
+     default:
+         return false;
+     }
+diff --git a/common/EncodeHelpers.cpp b/common/EncodeHelpers.cpp
+index 9684cb6..c5696ff 100644
+--- a/common/EncodeHelpers.cpp
++++ b/common/EncodeHelpers.cpp
+@@ -179,6 +179,55 @@ bool extractHEVCCSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd
+     return true;
+ }
+ 
++uint8_t c2MPEG4LevelToV4L2Level(C2Config::level_t level) {
++    switch (level) {
++    case C2Config::LEVEL_MP4V_0:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_0;
++    case C2Config::LEVEL_MP4V_0B:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_0B;
++    case C2Config::LEVEL_MP4V_1:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_1;
++    case C2Config::LEVEL_MP4V_2:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_2;
++    case C2Config::LEVEL_MP4V_3:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_3;
++    case C2Config::LEVEL_MP4V_3B:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_3B;
++    case C2Config::LEVEL_MP4V_4:
++    case C2Config::LEVEL_MP4V_4A:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_4;
++    case C2Config::LEVEL_MP4V_5:
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_5;
++    default:
++        ALOGE("Unrecognizable C2 MPEG-4 level (value = 0x%x), using 5", level);
++        return V4L2_MPEG_VIDEO_MPEG4_LEVEL_5;
++    }
++}
++
++bool extractMPEG4CSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd,
++                         const uint8_t* data, size_t length) {
++    constexpr uint8_t kVOPStartCode = 0xb6;
++    csd->reset();
++
++    // Everything up to the first VOP start code (00 00 01 b6).
++    size_t end = 0;
++    for (size_t i = 0; i + 4 <= length; i++) {
++        if (!data[i] && !data[i + 1] && data[i + 2] == 1 && data[i + 3] == kVOPStartCode) {
++            end = i;
++            break;
++        }
++    }
++    if (end < 4) {
++        ALOGE("No MPEG-4 headers in front of the first VOP");
++        return false;
++    }
++
++    ALOGV("Extracted MPEG-4 codec config data: length=%zu", end);
++    *csd = C2StreamInitDataInfo::output::AllocUnique(end, 0u);
++    memcpy((*csd)->m.value, data, end);
++    return true;
++}
++
+ bool extractSPSPPS(const uint8_t* data, size_t length, std::vector<uint8_t>* sps,
+                    std::vector<uint8_t>* pps) {
+     bool foundSPS = false;
+diff --git a/common/VideoTypes.cpp b/common/VideoTypes.cpp
+index d9f40a9..2a9f303 100644
+--- a/common/VideoTypes.cpp
++++ b/common/VideoTypes.cpp
+@@ -23,6 +23,10 @@ const char* VideoCodecToString(VideoCodec codec) {
+         return "HEVC";
+     case VideoCodec::AV1:
+         return "AV1";
++    case VideoCodec::MPEG4:
++        return "MPEG4";
++    case VideoCodec::H263:
++        return "H263";
+     }
+ }
+ 
+@@ -78,6 +82,12 @@ const char* profileToString(C2Config::profile_t profile) {
+         return "vp9 profile3";
+     case C2Config::PROFILE_AV1_0:
+         return "av1 profile 0";
++    case C2Config::PROFILE_MP4V_SIMPLE:
++        return "mpeg4 simple";
++    case C2Config::PROFILE_MP4V_ADVANCED_SIMPLE:
++        return "mpeg4 advanced simple";
++    case C2Config::PROFILE_H263_BASELINE:
++        return "h263 baseline";
+     case C2Config::PROFILE_AV1_1:
+         return "av1 profile 1";
+     case C2Config::PROFILE_AV1_2:
+diff --git a/common/include/v4l2_codec2/common/EncodeHelpers.h b/common/include/v4l2_codec2/common/EncodeHelpers.h
+index 7123f07..552bda8 100644
+--- a/common/include/v4l2_codec2/common/EncodeHelpers.h
++++ b/common/include/v4l2_codec2/common/EncodeHelpers.h
+@@ -46,6 +46,18 @@ inline bool isHEVCProfile(C2Config::profile_t profile) {
+     return profile >= C2Config::PROFILE_HEVC_MAIN && profile <= C2Config::PROFILE_HEVC_3D_MAIN;
+ }
+ 
++// Convert the specified C2Config MPEG-4 Part 2 level to a V4L2 MPEG-4 level.
++uint8_t c2MPEG4LevelToV4L2Level(C2Config::level_t level);
++
++inline bool isMPEG4Profile(C2Config::profile_t profile) {
++    return profile >= C2Config::PROFILE_MP4V_SIMPLE && profile <= C2Config::PROFILE_MP4V_FGS;
++}
++
++inline bool isH263Profile(C2Config::profile_t profile) {
++    return profile >= C2Config::PROFILE_H263_BASELINE &&
++           profile <= C2Config::PROFILE_H263_HIGH_LATENCY;
++}
++
+ // Get the specified graphics block in YCbCr format.
+ android_ycbcr getGraphicBlockInfo(const C2ConstGraphicBlock& block);
+ 
+@@ -66,6 +78,11 @@ bool extractCSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd, co
+ bool extractHEVCCSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd,
+                         const uint8_t* data, size_t length);
+ 
++// The same for MPEG-4 Part 2: the headers (Visual Object Sequence, Visual Object, Video Object
++// Layer) in front of the first VOP, as one block.
++bool extractMPEG4CSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd,
++                         const uint8_t* data, size_t length);
++
+ // Prepend the specified |sps| and |pps| NAL units (without start codes) to the H.264 |data| stream.
+ // The result is copied into |dst|. The provided |sps| and |pps| data will be updated if an SPS or
+ // PPS NAL unit is encountered. Returns the size of the new data, will be 0 if an error occurred.
+diff --git a/common/include/v4l2_codec2/common/VideoTypes.h b/common/include/v4l2_codec2/common/VideoTypes.h
+index 22ea0bc..1c4a4fe 100644
+--- a/common/include/v4l2_codec2/common/VideoTypes.h
++++ b/common/include/v4l2_codec2/common/VideoTypes.h
+@@ -20,11 +20,14 @@ enum class VideoCodec {
+     VP9,
+     HEVC,
+     AV1,
++    MPEG4,
++    H263,
+ };
+ 
+ constexpr std::initializer_list<VideoCodec> kAllCodecs = {VideoCodec::H264, VideoCodec::VP8,
+                                                           VideoCodec::VP9, VideoCodec::HEVC,
+-                                                          VideoCodec::AV1};
++                                                          VideoCodec::AV1, VideoCodec::MPEG4,
++                                                          VideoCodec::H263};
+ 
+ const char* VideoCodecToString(VideoCodec codec);
+ const char* profileToString(C2Config::profile_t profile);
+diff --git a/components/ComponentStore.cpp b/components/ComponentStore.cpp
+index 4a09336..3ee81d3 100644
+--- a/components/ComponentStore.cpp
++++ b/components/ComponentStore.cpp
+@@ -183,6 +183,12 @@ std::shared_ptr<const C2Component::Traits> ComponentStore::getTraits(const C2Str
+     case VideoCodec::AV1:
+         traits->mediaType = MEDIA_MIMETYPE_VIDEO_AV1;
+         break;
++    case VideoCodec::MPEG4:
++        traits->mediaType = MEDIA_MIMETYPE_VIDEO_MPEG4;
++        break;
++    case VideoCodec::H263:
++        traits->mediaType = MEDIA_MIMETYPE_VIDEO_H263;
++        break;
+     }
+ 
+     mCachedTraits.emplace(name, traits);
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index 35b3171..d0d9421 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -160,6 +160,12 @@ DecodeInterface::DecodeInterface(const std::string& name,
+         case VideoCodec::AV1:
+             profiles = {C2Config::PROFILE_AV1_0};
+             break;
++        case VideoCodec::MPEG4:
++            profiles = {C2Config::PROFILE_MP4V_SIMPLE, C2Config::PROFILE_MP4V_ADVANCED_SIMPLE};
++            break;
++        case VideoCodec::H263:
++            profiles = {C2Config::PROFILE_H263_BASELINE};
++            break;
+         }
+     }
+ 
+@@ -209,6 +215,16 @@ DecodeInterface::DecodeInterface(const std::string& name,
+                       C2Config::LEVEL_AV1_6, C2Config::LEVEL_AV1_6_1, C2Config::LEVEL_AV1_6_2, C2Config::LEVEL_AV1_6_3,
+                       C2Config::LEVEL_AV1_7, C2Config::LEVEL_AV1_7_1, C2Config::LEVEL_AV1_7_2, C2Config::LEVEL_AV1_7_3};
+             break;
++        case VideoCodec::MPEG4:
++            levels = {C2Config::LEVEL_MP4V_0, C2Config::LEVEL_MP4V_0B, C2Config::LEVEL_MP4V_1,
++                      C2Config::LEVEL_MP4V_2, C2Config::LEVEL_MP4V_3,  C2Config::LEVEL_MP4V_3B,
++                      C2Config::LEVEL_MP4V_4, C2Config::LEVEL_MP4V_4A, C2Config::LEVEL_MP4V_5};
++            break;
++        case VideoCodec::H263:
++            levels = {C2Config::LEVEL_H263_10, C2Config::LEVEL_H263_20, C2Config::LEVEL_H263_30,
++                      C2Config::LEVEL_H263_40, C2Config::LEVEL_H263_45, C2Config::LEVEL_H263_50,
++                      C2Config::LEVEL_H263_60, C2Config::LEVEL_H263_70};
++            break;
+         }
+     }
+ 
+@@ -272,6 +288,20 @@ DecodeInterface::DecodeInterface(const std::string& name,
+                              .withSetter(ProfileLevelSetter)
+                              .build());
+         break;
++
++    case VideoCodec::MPEG4:
++    case VideoCodec::H263:
++        inputMime = *mVideoCodec == VideoCodec::MPEG4 ? MEDIA_MIMETYPE_VIDEO_MPEG4
++                                                      : MEDIA_MIMETYPE_VIDEO_H263;
++        addParameter(DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                             .withDefault(new C2StreamProfileLevelInfo::input(
++                                     0u, static_cast<C2Config::profile_t>(defaultProfile),
++                                     static_cast<C2Config::level_t>(defaultLevel)))
++                             .withFields({C2F(mProfileLevel, profile).oneOf(profiles),
++                                          C2F(mProfileLevel, level).oneOf(levels)})
++                             .withSetter(ProfileLevelSetter)
++                             .build());
++        break;
+     }
+ 
+     addParameter(
+@@ -476,6 +506,10 @@ uint32_t DecodeInterface::getOutputDelay(VideoCodec codec) {
+     case VideoCodec::AV1:
+         // Reference: TOTAL_REFS_PER_FRAME at https://aomediacodec.github.io/av1-spec/#symbols-and-abbreviated-terms
+         return 8;
++    case VideoCodec::MPEG4:
++    case VideoCodec::H263:
++        // As for VP8: stateful decoders may hold more frames than the references.
++        return 8;
+     }
+ }
+ 
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index c86119a..d21d0d6 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -887,8 +887,11 @@ void EncodeComponent::onOutputBufferDone(size_t dataSize, int64_t timestamp, boo
+         ALOGV("No CSD submitted yet, extracting CSD");
+         std::unique_ptr<C2StreamInitDataInfo::output> csd;
+         C2ReadView view = constBlock.map().get();
+-        bool extracted = isHEVCProfile(mInterface->getOutputProfile())
++        C2Config::profile_t profile = mInterface->getOutputProfile();
++        bool extracted = isHEVCProfile(profile)
+                                  ? extractHEVCCSDInfo(&csd, view.data(), view.capacity())
++                         : isMPEG4Profile(profile)
++                                 ? extractMPEG4CSDInfo(&csd, view.data(), view.capacity())
+                                  : extractCSDInfo(&csd, view.data(), view.capacity());
+         if (!extracted) {
+             ALOGE("Failed to extract CSD");
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index d03c72b..76a33c0 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -174,6 +174,34 @@ C2R EncodeInterface::HEVCProfileLevelSetter(bool /*mayBlock*/,
+     return C2R::Ok();
+ }
+ 
++// static
++C2R EncodeInterface::MPEG4ProfileLevelSetter(bool /*mayBlock*/,
++                                             C2P<C2StreamProfileLevelInfo::output>& info) {
++    if (!info.F(info.v.profile).supportsAtAll(info.v.profile)) {
++        ALOGV("Set profile to Simple instead of %u.", info.v.profile);
++        info.set().profile = C2Config::PROFILE_MP4V_SIMPLE;
++    }
++    if (!info.F(info.v.level).supportsAtAll(info.v.level)) {
++        ALOGV("Set level to 5 instead of %u.", info.v.level);
++        info.set().level = C2Config::LEVEL_MP4V_5;
++    }
++    return C2R::Ok();
++}
++
++// static
++C2R EncodeInterface::H263ProfileLevelSetter(bool /*mayBlock*/,
++                                            C2P<C2StreamProfileLevelInfo::output>& info) {
++    if (!info.F(info.v.profile).supportsAtAll(info.v.profile)) {
++        ALOGV("Set profile to Baseline instead of %u.", info.v.profile);
++        info.set().profile = C2Config::PROFILE_H263_BASELINE;
++    }
++    if (!info.F(info.v.level).supportsAtAll(info.v.level)) {
++        ALOGV("Set level to 45 instead of %u.", info.v.level);
++        info.set().level = C2Config::LEVEL_H263_45;
++    }
++    return C2R::Ok();
++}
++
+ // static
+ C2R EncodeInterface::SizeSetter(bool mayBlock, C2P<C2StreamPictureSizeInfo::input>& videoSize) {
+     (void)mayBlock;
+@@ -342,6 +370,47 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                         .withSetter(HEVCProfileLevelSetter, mInputVisibleSize, mFrameRate,
+                                     mBitrate)
+                         .build());
++    } else if (caps.codec == VideoCodec::MPEG4) {
++        outputMime = MEDIA_MIMETYPE_VIDEO_MPEG4;
++        // Simple only: the encoder runs without B-frames, so Advanced Simple brings nothing.
++        // V4L2 has no level above 5; the MFC encodes bigger pictures at level 5 as well.
++        addParameter(
++                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                        .withDefault(new C2StreamProfileLevelInfo::output(
++                                0u, C2Config::PROFILE_MP4V_SIMPLE, C2Config::LEVEL_MP4V_5))
++                        .withFields({C2F(mProfileLevel, profile)
++                                             .oneOf({C2Config::PROFILE_MP4V_SIMPLE}),
++                                     C2F(mProfileLevel, level)
++                                             .oneOf({C2Config::LEVEL_MP4V_0,
++                                                     C2Config::LEVEL_MP4V_0B,
++                                                     C2Config::LEVEL_MP4V_1,
++                                                     C2Config::LEVEL_MP4V_2,
++                                                     C2Config::LEVEL_MP4V_3,
++                                                     C2Config::LEVEL_MP4V_3B,
++                                                     C2Config::LEVEL_MP4V_4A,
++                                                     C2Config::LEVEL_MP4V_5})})
++                        .withSetter(MPEG4ProfileLevelSetter)
++                        .build());
++    } else if (caps.codec == VideoCodec::H263) {
++        outputMime = MEDIA_MIMETYPE_VIDEO_H263;
++        // Baseline; the level only describes the stream, V4L2 has no control for it.
++        addParameter(
++                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                        .withDefault(new C2StreamProfileLevelInfo::output(
++                                0u, C2Config::PROFILE_H263_BASELINE, C2Config::LEVEL_H263_45))
++                        .withFields({C2F(mProfileLevel, profile)
++                                             .oneOf({C2Config::PROFILE_H263_BASELINE}),
++                                     C2F(mProfileLevel, level)
++                                             .oneOf({C2Config::LEVEL_H263_10,
++                                                     C2Config::LEVEL_H263_20,
++                                                     C2Config::LEVEL_H263_30,
++                                                     C2Config::LEVEL_H263_40,
++                                                     C2Config::LEVEL_H263_45,
++                                                     C2Config::LEVEL_H263_50,
++                                                     C2Config::LEVEL_H263_60,
++                                                     C2Config::LEVEL_H263_70})})
++                        .withSetter(H263ProfileLevelSetter)
++                        .build());
+     } else {
+         ALOGE("Unsupported component name: %s", name.c_str());
+         mInitStatus = C2_BAD_VALUE;
+diff --git a/components/include/v4l2_codec2/components/EncodeInterface.h b/components/include/v4l2_codec2/components/EncodeInterface.h
+index 37db55c..6a22c8b 100644
+--- a/components/include/v4l2_codec2/components/EncodeInterface.h
++++ b/components/include/v4l2_codec2/components/EncodeInterface.h
+@@ -71,6 +71,10 @@ protected:
+                                      const C2P<C2StreamFrameRateInfo::output>& frameRate,
+                                      const C2P<C2StreamBitrateInfo::output>& bitrate);
+ 
++    static C2R MPEG4ProfileLevelSetter(bool mayBlock,
++                                      C2P<C2StreamProfileLevelInfo::output>& info);
++    static C2R H263ProfileLevelSetter(bool mayBlock, C2P<C2StreamProfileLevelInfo::output>& info);
++
+     static C2R SizeSetter(bool mayBlock, C2P<C2StreamPictureSizeInfo::input>& videoSize);
+ 
+     static C2R IntraRefreshPeriodSetter(bool mayBlock,
+diff --git a/v4l2/V4L2ComponentCommon.cpp b/v4l2/V4L2ComponentCommon.cpp
+index e210b92..c3b0f71 100644
+--- a/v4l2/V4L2ComponentCommon.cpp
++++ b/v4l2/V4L2ComponentCommon.cpp
+@@ -16,12 +16,16 @@ const std::string V4L2ComponentName::kH264Encoder = "c2.v4l2.avc.encoder";
+ const std::string V4L2ComponentName::kVP8Encoder = "c2.v4l2.vp8.encoder";
+ const std::string V4L2ComponentName::kVP9Encoder = "c2.v4l2.vp9.encoder";
+ const std::string V4L2ComponentName::kHEVCEncoder = "c2.v4l2.hevc.encoder";
++const std::string V4L2ComponentName::kMPEG4Encoder = "c2.v4l2.mpeg4.encoder";
++const std::string V4L2ComponentName::kH263Encoder = "c2.v4l2.h263.encoder";
+ 
+ const std::string V4L2ComponentName::kH264Decoder = "c2.v4l2.avc.decoder";
+ const std::string V4L2ComponentName::kVP8Decoder = "c2.v4l2.vp8.decoder";
+ const std::string V4L2ComponentName::kVP9Decoder = "c2.v4l2.vp9.decoder";
+ const std::string V4L2ComponentName::kHEVCDecoder = "c2.v4l2.hevc.decoder";
+ const std::string V4L2ComponentName::kAV1Decoder = "c2.v4l2.av1.decoder";
++const std::string V4L2ComponentName::kMPEG4Decoder = "c2.v4l2.mpeg4.decoder";
++const std::string V4L2ComponentName::kH263Decoder = "c2.v4l2.h263.decoder";
+ const std::string V4L2ComponentName::kH264SecureDecoder = "c2.v4l2.avc.decoder.secure";
+ const std::string V4L2ComponentName::kVP8SecureDecoder = "c2.v4l2.vp8.decoder.secure";
+ const std::string V4L2ComponentName::kVP9SecureDecoder = "c2.v4l2.vp9.decoder.secure";
+@@ -33,7 +37,9 @@ bool V4L2ComponentName::isValid(const std::string& name) {
+            name == kHEVCEncoder ||
+            name == kH264Decoder || name == kVP8Decoder || name == kVP9Decoder ||
+            name == kHEVCDecoder || name == kAV1Decoder || name == kH264SecureDecoder ||
+-	   name == kVP8SecureDecoder || name == kVP9SecureDecoder || name == kHEVCSecureDecoder;
++	   name == kVP8SecureDecoder || name == kVP9SecureDecoder || name == kHEVCSecureDecoder ||
++           name == kMPEG4Encoder || name == kH263Encoder || name == kMPEG4Decoder ||
++           name == kH263Decoder;
+ }
+ 
+ // static
+@@ -41,7 +47,7 @@ bool V4L2ComponentName::isEncoder(const std::string& name) {
+     ALOG_ASSERT(isValid(name));
+ 
+     return name == kH264Encoder || name == kVP8Encoder || name == kVP9Encoder ||
+-           name == kHEVCEncoder;
++           name == kHEVCEncoder || name == kMPEG4Encoder || name == kH263Encoder;
+ }
+ 
+ // static
+@@ -50,7 +56,7 @@ bool V4L2ComponentName::isDecoder(const std::string& name) {
+     static const std::set<std::string> kValidDecoders = {
+             kH264Decoder, kH264SecureDecoder, kVP8Decoder,  kVP8SecureDecoder,
+             kVP9Decoder,  kVP9SecureDecoder,  kHEVCDecoder, kHEVCSecureDecoder,
+-            kAV1Decoder
++            kAV1Decoder,  kMPEG4Decoder,      kH263Decoder
+     };
+ 
+     return kValidDecoders.find(name) != kValidDecoders.end();
+@@ -73,6 +79,10 @@ std::optional<VideoCodec> V4L2ComponentName::getCodec(const std::string& name) {
+             {kHEVCEncoder, VideoCodec::HEVC},
+ 
+             {kAV1Decoder, VideoCodec::AV1},
++
++            {kMPEG4Decoder, VideoCodec::MPEG4}, {kMPEG4Encoder, VideoCodec::MPEG4},
++
++            {kH263Decoder, VideoCodec::H263}, {kH263Encoder, VideoCodec::H263},
+     };
+ 
+     auto iter = kNameToCodecs.find(name);
+diff --git a/v4l2/V4L2ComponentStore.cpp b/v4l2/V4L2ComponentStore.cpp
+index e00bceb..2667f50 100644
+--- a/v4l2/V4L2ComponentStore.cpp
++++ b/v4l2/V4L2ComponentStore.cpp
+@@ -50,6 +50,12 @@ std::shared_ptr<C2ComponentStore> V4L2ComponentStore::Create() {
+     if (property_get_bool("ro.vendor.v4l2_codec2.encoder.supported.hevc", false))
+         builder.encoder(V4L2ComponentName::kHEVCEncoder, VideoCodec::HEVC,
+                         &V4L2ComponentFactory::create);
++    if (property_get_bool("ro.vendor.v4l2_codec2.encoder.supported.mpeg4", false))
++        builder.encoder(V4L2ComponentName::kMPEG4Encoder, VideoCodec::MPEG4,
++                        &V4L2ComponentFactory::create);
++    if (property_get_bool("ro.vendor.v4l2_codec2.encoder.supported.h263", false))
++        builder.encoder(V4L2ComponentName::kH263Encoder, VideoCodec::H263,
++                        &V4L2ComponentFactory::create);
+ 
+     if (property_get_bool("ro.vendor.v4l2_codec2.decoder.supported.h264", false))
+         builder.decoder(V4L2ComponentName::kH264Decoder, VideoCodec::H264,
+@@ -66,6 +72,12 @@ std::shared_ptr<C2ComponentStore> V4L2ComponentStore::Create() {
+     if (property_get_bool("ro.vendor.v4l2_codec2.decoder.supported.av1", false))
+         builder.decoder(V4L2ComponentName::kAV1Decoder, VideoCodec::AV1,
+                         &V4L2ComponentFactory::create);
++    if (property_get_bool("ro.vendor.v4l2_codec2.decoder.supported.mpeg4", false))
++        builder.decoder(V4L2ComponentName::kMPEG4Decoder, VideoCodec::MPEG4,
++                        &V4L2ComponentFactory::create);
++    if (property_get_bool("ro.vendor.v4l2_codec2.decoder.supported.h263", false))
++        builder.decoder(V4L2ComponentName::kH263Decoder, VideoCodec::H263,
++                        &V4L2ComponentFactory::create);
+ 
+     if (property_get_bool("ro.vendor.v4l2_codec2.decoder.supported.h264.secure", false))
+         builder.decoder(V4L2ComponentName::kH264SecureDecoder, VideoCodec::H264,
+diff --git a/v4l2/V4L2Decoder.cpp b/v4l2/V4L2Decoder.cpp
+index 5b7a780..861f88d 100644
+--- a/v4l2/V4L2Decoder.cpp
++++ b/v4l2/V4L2Decoder.cpp
+@@ -59,6 +59,24 @@ bool waitForDRC(const C2ConstLinearBlock& input, std::optional<VideoCodec> codec
+     case VideoCodec::AV1:
+         // This is not easily checked and is not breaking to ignore
+         break;
++    case VideoCodec::MPEG4:
++        // A Video Object Layer header (start codes 00 00 01 20 to 2f) or an intra VOP
++        // (00 00 01 b6, vop_coding_type 0 in the next two bits).
++        for (size_t i = 0; i + 4 < view.capacity(); i++) {
++            if (pos[i] || pos[i + 1] || pos[i + 2] != 1) continue;
++            if ((pos[i + 3] & 0xf0) == 0x20) return true;
++            if (pos[i + 3] == 0xb6) return (pos[i + 4] >> 6) == 0;
++        }
++        break;
++    case VideoCodec::H263:
++        // Picture start code (22 bits: 00 00 8x), then TR (8 bits) and PTYPE: source format in
++        // bits 6-8 and picture coding type (0 = intra) in bit 9. With source format 7 (PLUSPTYPE)
++        // the coding type is elsewhere: assume intra.
++        if (view.capacity() >= 5 && !pos[0] && !pos[1] && (pos[2] & 0xfc) == 0x80) {
++            if (((pos[4] >> 2) & 0x7) == 0x7) return true;
++            return ((pos[4] >> 1) & 0x1) == 0;
++        }
++        break;
+     }
+ 
+     return false;
+diff --git a/v4l2/V4L2Device.cpp b/v4l2/V4L2Device.cpp
+index bb020ba..1b24312 100644
+--- a/v4l2/V4L2Device.cpp
++++ b/v4l2/V4L2Device.cpp
+@@ -40,6 +40,17 @@
+ 
+ namespace android {
+ 
++// The MPEG-4 Part 2 and H.263 levels a stateful decoder or encoder without the level control is
++// assumed to support.
++const std::vector<C2Config::level_t> kDefaultMPEG4Levels = {
++        C2Config::LEVEL_MP4V_0,  C2Config::LEVEL_MP4V_0B, C2Config::LEVEL_MP4V_1,
++        C2Config::LEVEL_MP4V_2,  C2Config::LEVEL_MP4V_3,  C2Config::LEVEL_MP4V_3B,
++        C2Config::LEVEL_MP4V_4,  C2Config::LEVEL_MP4V_4A, C2Config::LEVEL_MP4V_5};
++const std::vector<C2Config::level_t> kDefaultH263Levels = {
++        C2Config::LEVEL_H263_10, C2Config::LEVEL_H263_20, C2Config::LEVEL_H263_30,
++        C2Config::LEVEL_H263_40, C2Config::LEVEL_H263_45, C2Config::LEVEL_H263_50,
++        C2Config::LEVEL_H263_60, C2Config::LEVEL_H263_70};
++
+ bool isValidPixFmtForCodec(VideoCodec codec, uint32_t pixFmt) {
+     switch (pixFmt) {
+     case V4L2_PIX_FMT_H264:
+@@ -62,6 +73,10 @@ bool isValidPixFmtForCodec(VideoCodec codec, uint32_t pixFmt) {
+     case V4L2_PIX_FMT_AV1_FRAME:
+         return codec == VideoCodec::AV1;
+         break;
++    case V4L2_PIX_FMT_MPEG4:
++        return codec == VideoCodec::MPEG4;
++    case V4L2_PIX_FMT_H263:
++        return codec == VideoCodec::H263;
+     default:
+         ALOGE("Unhandled pixelformat %s", fourccToString(pixFmt).c_str());
+         return false;
+@@ -1317,6 +1332,12 @@ uint32_t V4L2Device::c2ProfileToV4L2PixFmt(C2Config::profile_t profile, bool sli
+         } else {
+             return V4L2_PIX_FMT_AV1;
+         }
++    } else if (profile >= C2Config::PROFILE_MP4V_SIMPLE && profile <= C2Config::PROFILE_MP4V_FGS) {
++        // Stateful only: there is no stateless MPEG-4 Part 2 or H.263 API.
++        return sliceBased ? 0 : V4L2_PIX_FMT_MPEG4;
++    } else if (profile >= C2Config::PROFILE_H263_BASELINE &&
++               profile <= C2Config::PROFILE_H263_HIGH_LATENCY) {
++        return sliceBased ? 0 : V4L2_PIX_FMT_H263;
+     } else {
+         ALOGE("Unknown profile: %s", profileToString(profile));
+         return 0;
+@@ -1437,6 +1458,28 @@ C2Config::level_t V4L2Device::v4L2LevelToC2Level(VideoCodec codec, uint32_t leve
+             return C2Config::LEVEL_HEVC_MAIN_6_2;
+         }
+         break;
++    case VideoCodec::MPEG4:
++        switch (level) {
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_0:
++            return C2Config::LEVEL_MP4V_0;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_0B:
++            return C2Config::LEVEL_MP4V_0B;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_1:
++            return C2Config::LEVEL_MP4V_1;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_2:
++            return C2Config::LEVEL_MP4V_2;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_3:
++            return C2Config::LEVEL_MP4V_3;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_3B:
++            return C2Config::LEVEL_MP4V_3B;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_4:
++            return C2Config::LEVEL_MP4V_4;
++        case V4L2_MPEG_VIDEO_MPEG4_LEVEL_5:
++            return C2Config::LEVEL_MP4V_5;
++        }
++        break;
++    case VideoCodec::H263:
++        return C2Config::LEVEL_UNUSED;
+     case VideoCodec::AV1:
+         switch (level) {
+         case V4L2_MPEG_VIDEO_AV1_LEVEL_2_0:
+@@ -1549,6 +1592,23 @@ C2Config::profile_t V4L2Device::v4L2ProfileToC2Profile(VideoCodec codec, uint32_
+             return C2Config::PROFILE_HEVC_MAIN_10;
+         }
+         break;
++    case VideoCodec::MPEG4:
++        switch (profile) {
++        case V4L2_MPEG_VIDEO_MPEG4_PROFILE_SIMPLE:
++            return C2Config::PROFILE_MP4V_SIMPLE;
++        case V4L2_MPEG_VIDEO_MPEG4_PROFILE_ADVANCED_SIMPLE:
++            return C2Config::PROFILE_MP4V_ADVANCED_SIMPLE;
++        case V4L2_MPEG_VIDEO_MPEG4_PROFILE_CORE:
++            return C2Config::PROFILE_MP4V_CORE;
++        case V4L2_MPEG_VIDEO_MPEG4_PROFILE_SIMPLE_SCALABLE:
++            return C2Config::PROFILE_MP4V_SIMPLE_SCALABLE;
++        case V4L2_MPEG_VIDEO_MPEG4_PROFILE_ADVANCED_CODING_EFFICIENCY:
++            return C2Config::PROFILE_MP4V_ACE;
++        }
++        break;
++    case VideoCodec::H263:
++        // V4L2 has no H.263 profile control.
++        break;
+     case VideoCodec::AV1:
+         switch (profile) {
+         case V4L2_MPEG_VIDEO_AV1_PROFILE_MAIN:
+@@ -1579,6 +1639,10 @@ uint32_t V4L2Device::videoCodecToPixFmt(VideoCodec codec) {
+         return V4L2_PIX_FMT_HEVC;
+     case VideoCodec::AV1:
+         return V4L2_PIX_FMT_AV1;
++    case VideoCodec::MPEG4:
++        return V4L2_PIX_FMT_MPEG4;
++    case VideoCodec::H263:
++        return V4L2_PIX_FMT_H263;
+     }
+ }
+ 
+@@ -1598,6 +1662,9 @@ std::vector<C2Config::level_t> V4L2Device::queryC2Levels(uint32_t pixFmt) {
+         case VideoCodec::AV1:
+             queryId = V4L2_CID_MPEG_VIDEO_AV1_LEVEL;
+             break;
++        case VideoCodec::MPEG4:
++            queryId = V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL;
++            break;
+         default:
+             return false;
+         }
+@@ -1676,6 +1743,16 @@ std::vector<C2Config::level_t> V4L2Device::queryC2Levels(uint32_t pixFmt) {
+                       C2Config::LEVEL_AV1_7, C2Config::LEVEL_AV1_7_1, C2Config::LEVEL_AV1_7_2, C2Config::LEVEL_AV1_7_3};
+         }
+         break;
++    case V4L2_PIX_FMT_MPEG4:
++        if (!getSupportedLevels(VideoCodec::MPEG4, &levels)) {
++            ALOGW("Driver doesn't support QUERY MPEG4 levels, use default values, 0-5");
++            levels = kDefaultMPEG4Levels;
++        }
++        break;
++    case V4L2_PIX_FMT_H263:
++        ALOGV("No H263 level control, use default values, 10-70");
++        levels = kDefaultH263Levels;
++        break;
+     default:
+         ALOGE("Unhandled pixelformat %s", fourccToString(pixFmt).c_str());
+         return {};
+@@ -1706,6 +1783,9 @@ std::vector<C2Config::profile_t> V4L2Device::queryC2Profiles(uint32_t pixFmt) {
+         case VideoCodec::AV1:
+             queryId = V4L2_CID_MPEG_VIDEO_AV1_PROFILE;
+             break;
++        case VideoCodec::MPEG4:
++            queryId = V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE;
++            break;
+         default:
+             return false;
+         }
+@@ -1774,6 +1854,17 @@ std::vector<C2Config::profile_t> V4L2Device::queryC2Profiles(uint32_t pixFmt) {
+             profiles = {C2Config::PROFILE_AV1_0};
+         }
+         break;
++    case V4L2_PIX_FMT_MPEG4:
++        if (!getSupportedProfiles(VideoCodec::MPEG4, &profiles)) {
++            ALOGW("Driver doesn't support QUERY MPEG4 profiles, "
++                  "use default values, Simple, Advanced Simple");
++            profiles = {C2Config::PROFILE_MP4V_SIMPLE, C2Config::PROFILE_MP4V_ADVANCED_SIMPLE};
++        }
++        break;
++    case V4L2_PIX_FMT_H263:
++        ALOGV("No H263 profile control, use default value, Baseline");
++        profiles = {C2Config::PROFILE_H263_BASELINE};
++        break;
+     default:
+         ALOGE("Unhandled pixelformat %s", fourccToString(pixFmt).c_str());
+         return {};
+@@ -2279,6 +2370,9 @@ C2Config::profile_t V4L2Device::getDefaultProfile(VideoCodec codec) {
+     case VideoCodec::AV1:
+         queryId = V4L2_CID_MPEG_VIDEO_AV1_PROFILE;
+         break;
++    case VideoCodec::MPEG4:
++        queryId = V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE;
++        break;
+     default:
+         return C2Config::PROFILE_UNUSED;
+     }
+@@ -2329,6 +2423,9 @@ C2Config::level_t V4L2Device::getDefaultLevel(VideoCodec codec) {
+     case VideoCodec::AV1:
+         queryId = V4L2_CID_MPEG_VIDEO_AV1_LEVEL;
+         break;
++    case VideoCodec::MPEG4:
++        queryId = V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL;
++        break;
+     default:
+         return C2Config::LEVEL_UNUSED;
+     }
+diff --git a/v4l2/V4L2EncodeComponent.cpp b/v4l2/V4L2EncodeComponent.cpp
+index 5313de1..0d45211 100644
+--- a/v4l2/V4L2EncodeComponent.cpp
++++ b/v4l2/V4L2EncodeComponent.cpp
+@@ -65,8 +65,9 @@ bool V4L2EncodeComponent::initializeEncoder() {
+     // Get the requested profile and level.
+     C2Config::profile_t outputProfile = mInterface->getOutputProfile();
+ 
+-    // CSD only needs to be extracted when using an H.264 or HEVC profile.
+-    mExtractCSD = isH264Profile(outputProfile) || isHEVCProfile(outputProfile);
++    // CSD only needs to be extracted when using an H.264, HEVC or MPEG-4 profile.
++    mExtractCSD = isH264Profile(outputProfile) || isHEVCProfile(outputProfile) ||
++                  isMPEG4Profile(outputProfile);
+ 
+     // The V4L2 level of the output, for the codecs that have one.
+     std::optional<uint8_t> h264Level;
+@@ -74,6 +75,8 @@ bool V4L2EncodeComponent::initializeEncoder() {
+         h264Level = c2LevelToV4L2Level(mInterface->getOutputLevel());
+     } else if (isHEVCProfile(outputProfile)) {
+         h264Level = c2HEVCLevelToV4L2Level(mInterface->getOutputLevel());
++    } else if (isMPEG4Profile(outputProfile)) {
++        h264Level = c2MPEG4LevelToV4L2Level(mInterface->getOutputLevel());
+     }
+ 
+     // Get the stride used by the C2 framework, as this might be different from the stride used by
+diff --git a/v4l2/V4L2Encoder.cpp b/v4l2/V4L2Encoder.cpp
+index d055c11..3b20f96 100644
+--- a/v4l2/V4L2Encoder.cpp
++++ b/v4l2/V4L2Encoder.cpp
+@@ -615,6 +615,40 @@ bool V4L2Encoder::configureDevice(C2Config::profile_t outputProfile,
+     if (isHEVCProfile(outputProfile)) {
+         return configureHEVC(outputH264Level);
+     }
++    if (isMPEG4Profile(outputProfile)) {
++        return configureMPEG4(outputH264Level);
++    }
++    if (isH263Profile(outputProfile)) {
++        // Baseline is the only H.263 profile, and there is no level control. QP is 1-31.
++        mDevice->setExtCtrls(V4L2_CTRL_CLASS_MPEG,
++                             {V4L2ExtCtrl(V4L2_CID_MPEG_VIDEO_B_FRAMES, 0),
++                              V4L2ExtCtrl(V4L2_CID_MPEG_VIDEO_H263_MAX_QP, 31)});
++    }
++
++    return true;
++}
++
++bool V4L2Encoder::configureMPEG4(std::optional<const uint8_t> outputLevel) {
++    if (!mDevice->setExtCtrls(V4L2_CTRL_CLASS_MPEG,
++                              {V4L2ExtCtrl(V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE,
++                                           V4L2_MPEG_VIDEO_MPEG4_PROFILE_SIMPLE),
++                               V4L2ExtCtrl(V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL,
++                                           outputLevel.value_or(
++                                                   V4L2_MPEG_VIDEO_MPEG4_LEVEL_5))})) {
++        ALOGE("Failed setting the MPEG-4 profile and level");
++        return false;
++    }
++
++    std::vector<V4L2ExtCtrl> mpeg4Ctrls;
++    // No B-frames: Simple profile has none.
++    mpeg4Ctrls.emplace_back(V4L2_CID_MPEG_VIDEO_B_FRAMES, 0);
++    // The MPEG-4 QP range is 1-31.
++    mpeg4Ctrls.emplace_back(V4L2_CID_MPEG_VIDEO_MPEG4_MAX_QP, 31);
++    // extractMPEG4CSDInfo() expects the headers in front of the first VOP.
++    mpeg4Ctrls.emplace_back(V4L2_CID_MPEG_VIDEO_HEADER_MODE,
++                            V4L2_MPEG_VIDEO_HEADER_MODE_JOINED_WITH_1ST_FRAME);
++    // Ignore return value as these controls are optional.
++    mDevice->setExtCtrls(V4L2_CTRL_CLASS_MPEG, std::move(mpeg4Ctrls));
+ 
+     return true;
+ }
+diff --git a/v4l2/include/v4l2_codec2/v4l2/V4L2ComponentCommon.h b/v4l2/include/v4l2_codec2/v4l2/V4L2ComponentCommon.h
+index c27c338..dba8d2c 100644
+--- a/v4l2/include/v4l2_codec2/v4l2/V4L2ComponentCommon.h
++++ b/v4l2/include/v4l2_codec2/v4l2/V4L2ComponentCommon.h
+@@ -17,12 +17,16 @@ struct V4L2ComponentName {
+     static const std::string kVP8Encoder;
+     static const std::string kHEVCEncoder;
+     static const std::string kVP9Encoder;
++    static const std::string kMPEG4Encoder;
++    static const std::string kH263Encoder;
+ 
+     static const std::string kH264Decoder;
+     static const std::string kVP8Decoder;
+     static const std::string kVP9Decoder;
+     static const std::string kHEVCDecoder;
+     static const std::string kAV1Decoder;
++    static const std::string kMPEG4Decoder;
++    static const std::string kH263Decoder;
+     static const std::string kH264SecureDecoder;
+     static const std::string kVP8SecureDecoder;
+     static const std::string kVP9SecureDecoder;
+diff --git a/v4l2/include/v4l2_codec2/v4l2/V4L2Encoder.h b/v4l2/include/v4l2_codec2/v4l2/V4L2Encoder.h
+index c5a46b9..a5eae5e 100644
+--- a/v4l2/include/v4l2_codec2/v4l2/V4L2Encoder.h
++++ b/v4l2/include/v4l2_codec2/v4l2/V4L2Encoder.h
+@@ -103,6 +103,8 @@ private:
+                        std::optional<const uint8_t> outputH264Level);
+     // Configure the HEVC specific controls: profile, level, headers.
+     bool configureHEVC(std::optional<const uint8_t> outputLevel);
++    // Configure the MPEG-4 Part 2 specific controls: profile, level, headers.
++    bool configureMPEG4(std::optional<const uint8_t> outputLevel);
+     // Configure the specified bitrate mode on the V4L2 device.
+     bool configureBitrateMode(C2Config::bitrate_mode_t bitrateMode);
+ 
+-- 
+2.47.3
+

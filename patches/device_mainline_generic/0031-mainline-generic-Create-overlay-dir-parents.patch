@@ -1,0 +1,33 @@
+From e2f21bfe54b24bd719e7d281f13e33b67bc0058b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 31/33] mainline/generic: Create overlay dir parents
+
+Create the parent of an overlay upperdir or workdir if missing, so that
+they can live in a subdirectory of a tmpfs mount point.
+
+Assisted-by: LLM
+Change-Id: I254b5d324a7c8318fc843c42a44a289e39b280c1
+---
+ services/generic_init/mount_helpers.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/services/generic_init/mount_helpers.cpp b/services/generic_init/mount_helpers.cpp
+index ddafa55..3315ac6 100644
+--- a/services/generic_init/mount_helpers.cpp
++++ b/services/generic_init/mount_helpers.cpp
+@@ -109,7 +109,10 @@ static void CreateOverlayfsUpperdirAndWorkdirIfNotPresent(const FstabEntry& entr
+         LOG(INFO) << "Creating " << param << " for overlayfs mount point "
+                   << entry.mount_point << ": " << arg;
+ 
+-        // TODO: Bring mkdir_recursive() to util.cpp and use it
++        const auto parent = std::filesystem::path(arg).parent_path().string();
++        if (!TryAccessDir(parent) && mkdir(parent.c_str(), 0755)) {
++            LOG(ERROR) << "Failed to create directory " << parent;
++        }
+         if (mkdir(arg.c_str(), 0755)) {
+             LOG(ERROR) << "Failed to create directory " << arg;
+         }
+-- 
+2.47.3
+

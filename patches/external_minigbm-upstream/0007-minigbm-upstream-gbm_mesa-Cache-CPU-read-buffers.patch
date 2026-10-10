@@ -1,0 +1,248 @@
+From 5bd4b523910fce9e665a3a7af539bf873f13292d Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:08:43 +0200
+Subject: [PATCH 7/7] minigbm-upstream: gbm_mesa: Cache CPU-read buffers
+
+On a SoC without cache-coherent GPU buffers, buffers allocated by the GPU
+driver are mapped write-combined, and CPU reads of rendered content, such
+as the RGB input of a video encoder converted on the CPU, are very slow.
+
+Allocate linear RGB buffers read often by the CPU from the system
+dma-heap, unless they are for scanout, camera, decoding or protected
+content. The heap maps them cached; map, invalidate and unmap do the cache
+maintenance with DMA_BUF_IOCTL_SYNC. Imported heap buffers are recognized
+by the exporter name in fdinfo. Fall back to the GPU if the heap fails.
+
+Assisted-by: LLM
+Change-Id: I8652c2af3e5b6fb724eaa1657070e8aad02be314
+---
+ gbm_mesa_driver/gbm_mesa_driver.cpp    |   1 +
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 136 +++++++++++++++++++++++++
+ gbm_mesa_driver/gbm_mesa_internals.h   |   1 +
+ 3 files changed, 138 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_driver.cpp b/gbm_mesa_driver/gbm_mesa_driver.cpp
+index 3fa950e..2865343 100644
+--- a/gbm_mesa_driver/gbm_mesa_driver.cpp
++++ b/gbm_mesa_driver/gbm_mesa_driver.cpp
+@@ -33,6 +33,7 @@ struct backend backend_gbm_mesa = {
+ 	.bo_import = gbm_mesa_bo_import,
+ 	.bo_map = gbm_mesa_bo_map,
+ 	.bo_unmap = gbm_mesa_bo_unmap,
++	.bo_invalidate = gbm_mesa_bo_invalidate,
+ 	.bo_get_plane_fd = gbm_mesa_bo_get_plane_fd,
+ 	.bo_get_map_stride = gbm_mesa_bo_get_map_stride,
+ 	.resolve_format_and_use_flags = gbm_mesa_resolve_format_and_use_flags,
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 64ca010..c69185f 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -25,6 +25,8 @@ extern "C" {
+ #include "gbm_mesa_wrapper.h"
+ 
+ #include "UniqueFd.h"
++#include "external/dma-buf.h"
++#include "external/dma-heap.h"
+ #include "drv_priv.h"
+ #include "util.h"
+ #include <algorithm>
+@@ -38,6 +40,8 @@ extern "C" {
+ #include <gbm.h>
+ #include <glob.h>
+ #include <iterator>
++#include <mutex>
++#include <sys/ioctl.h>
+ #include <linux/dma-buf.h>
+ #include <log/log.h>
+ #include <stdlib.h>
+@@ -340,8 +344,80 @@ struct GbmMesaBoPriv {
+ 	uint32_t map_stride = 0;
+ 	UniqueFd fds[DRV_MAX_PLANES];
+ 	struct gbm_bo *gbm_bo = nullptr;
++	/* Allocated from the system dma-heap, see gbm_mesa_use_heap() */
++	bool heap = false;
+ };
+ 
++/*
++ * On a SoC without cache-coherent GPU buffers, buffers allocated by the GPU
++ * driver are mapped write-combined and CPU reads from them are very slow.
++ * The system dma-heap maps cached and does the cache maintenance on
++ * DMA_BUF_IOCTL_SYNC, and the GPU imports its buffers like any dma-buf.
++ */
++static bool gbm_mesa_use_heap(uint32_t format, uint64_t use_flags)
++{
++	if (!(use_flags & BO_USE_SW_READ_OFTEN))
++		return false;
++	if (use_flags & (BO_USE_SCANOUT | BO_USE_CURSOR | BO_USE_PROTECTED | BO_USE_CAMERA_READ |
++			 BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER))
++		return false;
++
++	switch (format) {
++	case DRM_FORMAT_ABGR8888:
++	case DRM_FORMAT_XBGR8888:
++	case DRM_FORMAT_ARGB8888:
++	case DRM_FORMAT_XRGB8888:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static int gbm_mesa_heap_alloc(size_t size)
++{
++	static int heap_fd = -1;
++	static std::once_flag once;
++
++	/* The heap nodes are 0444: DMA_HEAP_IOCTL_ALLOC needs no write access. */
++	std::call_once(once, [] { heap_fd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC); });
++	if (heap_fd < 0)
++		return -ENODEV;
++
++	struct dma_heap_allocation_data args = {
++		.len = size,
++		.fd_flags = O_RDWR | O_CLOEXEC,
++	};
++	if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &args))
++		return -errno;
++
++	return args.fd;
++}
++
++/* A dma-buf exported by the system heap, as fdinfo names its exporter. */
++static bool gbm_mesa_is_heap_fd(int fd)
++{
++	char path[64], buf[512];
++
++	snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
++	int info = open(path, O_RDONLY | O_CLOEXEC);
++	if (info < 0)
++		return false;
++	ssize_t n = read(info, buf, sizeof(buf) - 1);
++	close(info);
++	if (n <= 0)
++		return false;
++	buf[n] = '\0';
++
++	return strstr(buf, "exp_name:\tsystem\n") != nullptr;
++}
++
++static int gbm_mesa_heap_sync(int fd, uint64_t flags)
++{
++	struct dma_buf_sync sync = { .flags = flags | DMA_BUF_SYNC_RW };
++
++	return ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) ? -errno : 0;
++}
++
+ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
+ 		       uint64_t use_flags)
+ {
+@@ -360,6 +436,32 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 
+ 	auto wr = drv->wrapper;
+ 
++	if (gbm_mesa_use_heap(format, use_flags)) {
++		/* Linear, pitch aligned for the GPU as a render target. */
++		uint32_t stride = ALIGN(drv_stride_from_format(format, width, 0), 64);
++
++		drv_bo_from_format(bo, stride, 1, height, format);
++		bo->meta.total_size = ALIGN(bo->meta.total_size, 4096);
++		bo->meta.format_modifier = DRM_FORMAT_MOD_LINEAR;
++
++		int fd = gbm_mesa_heap_alloc(bo->meta.total_size);
++		if (fd >= 0) {
++			auto priv = new GbmMesaBoPriv();
++			bo->inode = drv_get_inode(fd);
++			priv->fds[0] = UniqueFd(fd);
++			for (size_t plane = 1; plane < bo->meta.num_planes; plane++)
++				priv->fds[plane] = UniqueFd(dup(fd));
++			priv->map_stride = stride;
++			priv->heap = true;
++			priv->drv = drv;
++			bo->priv = priv;
++			drv_logv("Allocated from the system heap: %dx%d, stride %u", width, height,
++				 stride);
++			return 0;
++		}
++		drv_loge("System heap allocation failed (%d), falling back to the GPU", fd);
++	}
++
+ 	struct alloc_args alloc_args = {
+ 		.gbm = drv->gbm_dev,
+ 		.width = width,
+@@ -457,6 +559,14 @@ int gbm_mesa_bo_import(struct bo *bo, struct drv_import_fd_data *data)
+ 		priv->fds[plane] = UniqueFd(dup(data->fds[plane]));
+ 	}
+ 
++	/* Allocated from the system heap by gbm_mesa_bo_create(): map it directly. */
++	if ((data->use_flags & BO_USE_SW_MASK) && gbm_mesa_is_heap_fd(data->fds[0])) {
++		priv->heap = true;
++		priv->map_stride = data->strides[0];
++		bo->priv = priv;
++		return 0;
++	}
++
+ 	if (data->use_flags & BO_USE_SW_MASK) {
+ 		// Mapping require importing by gbm_mesa
+ 		auto drv = gbm_mesa_get_or_init_driver(bo->drv, true);
+@@ -514,6 +624,14 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ 	vma->length = bo->meta.total_size;
+ 
+ 	auto priv = (GbmMesaBoPriv *)bo->priv;
++
++	if (priv->heap) {
++		void *addr = mmap(nullptr, vma->length, PROT_READ | PROT_WRITE, MAP_SHARED,
++				  priv->fds[0].Get(), 0);
++		vma->priv = nullptr;
++		return addr;
++	}
++
+ 	assert(priv->gbm_bo != nullptr);
+ 
+ 	void *buf = MAP_FAILED;
+@@ -547,6 +665,13 @@ int gbm_mesa_bo_unmap(struct bo *bo, struct vma *vma)
+ 	auto wr = drv->wrapper;
+ 
+ 	auto priv = (GbmMesaBoPriv *)bo->priv;
++
++	if (priv->heap) {
++		/* End of the CPU access begun in gbm_mesa_bo_invalidate(). */
++		gbm_mesa_heap_sync(priv->fds[0].Get(), DMA_BUF_SYNC_END);
++		return munmap(vma->addr, vma->length);
++	}
++
+ 	assert(priv->gbm_bo != nullptr);
+ 	assert(vma->priv != nullptr);
+ 	wr->unmap(priv->gbm_bo, vma->priv);
+@@ -554,6 +679,17 @@ int gbm_mesa_bo_unmap(struct bo *bo, struct vma *vma)
+ 	return 0;
+ }
+ 
++/* Called on every lock: the GPU may have written the buffer since the last one. */
++int gbm_mesa_bo_invalidate(struct bo *bo, struct mapping *mapping)
++{
++	auto priv = (GbmMesaBoPriv *)bo->priv;
++
++	if (!priv || !priv->heap)
++		return 0;
++
++	return gbm_mesa_heap_sync(priv->fds[0].Get(), DMA_BUF_SYNC_START);
++}
++
+ uint32_t gbm_mesa_bo_get_map_stride(struct bo *bo)
+ {
+ 	auto priv = (GbmMesaBoPriv *)bo->priv;
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.h b/gbm_mesa_driver/gbm_mesa_internals.h
+index 4a8ac9d..906495e 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.h
++++ b/gbm_mesa_driver/gbm_mesa_internals.h
+@@ -45,6 +45,7 @@ int gbm_mesa_bo_import(struct bo *bo, struct drv_import_fd_data *data);
+ 
+ int gbm_mesa_bo_destroy(struct bo *bo);
+ 
++int gbm_mesa_bo_invalidate(struct bo *bo, struct mapping *mapping);
+ uint32_t gbm_mesa_bo_get_map_stride(struct bo *bo);
+ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags);
+ int gbm_mesa_bo_unmap(struct bo *bo, struct vma *vma);
+-- 
+2.47.3
+

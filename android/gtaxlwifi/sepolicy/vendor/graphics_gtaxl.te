@@ -1,4 +1,0 @@
-# minigbm (gbm_mesa) allocates from the system heap the RGB buffers the CPU
-# reads often, for example the software video encoder's input, instead of
-# from the GPU (mapped write-combined on Panfrost): §57.11.
-allow hal_graphics_allocator_default dmabuf_system_heap_device:chr_file r_file_perms;

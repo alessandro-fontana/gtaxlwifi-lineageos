@@ -1,0 +1,30 @@
+From 2c252e7ff6f4a5dcd9eb7bdf9e7298a9d286777e Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 19/33] mainline/generic: sepolicy: Let usbd use binder
+
+usbd waits for the USB gadget HAL, which may start later. usbd only has
+binder_call to servicemanager, so it cannot receive the registration
+callback and USB is never configured.
+
+Assisted-by: LLM
+Change-Id: Icbf234aaf9d5fc79aedf3a75a911bd91289c4ab2
+---
+ sepolicy/private/init_dev.te | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/sepolicy/private/init_dev.te b/sepolicy/private/init_dev.te
+index 8e5d349..3dacd1a 100644
+--- a/sepolicy/private/init_dev.te
++++ b/sepolicy/private/init_dev.te
+@@ -19,3 +19,7 @@ allow init gpu_device:chr_file getattr;
+ # ueventd relabels the nodes created by generic_init before the policy.
+ allow ueventd tmpfs:{ chr_file lnk_file } { getattr relabelfrom };
+ allow ueventd dev_type:{ chr_file lnk_file } relabelto;
++
++# usbd waits for the USB gadget HAL; without binder_use, servicemanager
++# cannot notify it and USB is never configured.
++binder_use(usbd)
+-- 
+2.47.3
+

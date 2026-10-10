@@ -1,0 +1,97 @@
+From 058960d06c41c4e6b20fa0aa737d5eab58e5f5f4 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 14:14:50 +0200
+Subject: [PATCH 19/31] ipa: simple: lut: Read gamma and contrast from tuning
+ file
+
+A plain 0.5 gamma lifts the shadows of a high contrast scene to a
+washed out grey. Read the gamma and a default contrast, the S-curve
+applied when no Contrast control is set, from the tuning file.
+
+When no contrast control was set, also compare the contrast stored
+with the tables to the default: an empty optional never equals it, and
+the gamma and colour tables were rebuilt on every frame.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/lut.cpp | 24 ++++++++++++++++--------
+ src/ipa/simple/algorithms/lut.h   |  4 ++++
+ 2 files changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/lut.cpp b/src/ipa/simple/algorithms/lut.cpp
+index d1d5f727..4823782e 100644
+--- a/src/ipa/simple/algorithms/lut.cpp
++++ b/src/ipa/simple/algorithms/lut.cpp
+@@ -24,18 +24,23 @@ LOG_DEFINE_CATEGORY(IPASoftLut)
+ 
+ namespace ipa::soft::algorithms {
+ 
+-int Lut::init(IPAContext &context,
+-	      [[maybe_unused]] const YamlObject &tuningData)
++int Lut::init(IPAContext &context, const YamlObject &tuningData)
+ {
+-	context.ctrlMap[&controls::Contrast] = ControlInfo(0.0f, 2.0f, 1.0f);
++	/*
++	 * A plain 0.5 gamma lifts the shadows of a high contrast scene to a
++	 * washed out grey: a default contrast above 1 adds the S-curve a
++	 * camera normally applies on top.
++	 */
++	gamma_ = tuningData["gamma"].get<float>(0.5);
++	contrast_ = tuningData["contrast"].get<float>(1.0);
++	context.ctrlMap[&controls::Contrast] = ControlInfo(0.0f, 2.0f, contrast_);
+ 	return 0;
+ }
+ 
+ int Lut::configure(IPAContext &context,
+ 		   [[maybe_unused]] const IPAConfigInfo &configInfo)
+ {
+-	/* Gamma value is fixed */
+-	context.configuration.gamma = 0.5;
++	context.configuration.gamma = gamma_;
+ 	context.activeState.knobs.contrast = std::optional<double>();
+ 	updateGammaTable(context);
+ 
+@@ -59,7 +64,7 @@ void Lut::updateGammaTable(IPAContext &context)
+ 	auto &gammaTable = context.activeState.gamma.gammaTable;
+ 	const auto blackLevel = context.activeState.blc.level;
+ 	const unsigned int blackIndex = blackLevel * gammaTable.size() / 256;
+-	const auto contrast = context.activeState.knobs.contrast.value_or(1.0);
++	const auto contrast = context.activeState.knobs.contrast.value_or(contrast_);
+ 
+ 	std::fill(gammaTable.begin(), gammaTable.begin() + blackIndex, 0);
+ 	const float divisor = gammaTable.size() - blackIndex - 1.0;
+@@ -96,11 +101,14 @@ void Lut::prepare(IPAContext &context,
+ 	 * Update the gamma table if needed. This means if black level changes
+ 	 * and since the black level gets updated only if a lower value is
+ 	 * observed, it's not permanently prone to minor fluctuations or
+-	 * rounding errors.
++	 * rounding errors. With no contrast requested, compare with the
++	 * default: an empty optional never equals the value in the table and
++	 * would rebuild the tables on every frame.
+ 	 */
+ 	const bool gammaUpdateNeeded =
+ 		context.activeState.gamma.blackLevel != context.activeState.blc.level ||
+-		context.activeState.gamma.contrast != context.activeState.knobs.contrast;
++		context.activeState.gamma.contrast !=
++			context.activeState.knobs.contrast.value_or(contrast_);
+ 	if (gammaUpdateNeeded)
+ 		updateGammaTable(context);
+ 
+diff --git a/src/ipa/simple/algorithms/lut.h b/src/ipa/simple/algorithms/lut.h
+index ba8b9021..e9b43ff3 100644
+--- a/src/ipa/simple/algorithms/lut.h
++++ b/src/ipa/simple/algorithms/lut.h
+@@ -39,6 +39,10 @@ public:
+ private:
+ 	void updateGammaTable(IPAContext &context);
+ 	int16_t ccmValue(unsigned int i, float ccm) const;
++
++	/* From the tuning file: the defaults of the gamma curve. */
++	float gamma_ = 0.5;
++	float contrast_ = 1.0;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.47.3
+

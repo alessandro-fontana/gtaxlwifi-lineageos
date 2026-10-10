@@ -1,0 +1,97 @@
+From f6ed478d2677985dab981209ec6cd8bf1534aa4d Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 18:51:52 +0200
+Subject: [PATCH 14/31] ipa: simple: af: Park the lens mid-range without a peak
+
+In a dark or featureless scene the contrast is set by noise, and the
+best position of the coarse sweep is random. Park the lens mid-range
+when the best contrast is less than 15% above the worst.
+
+Also take the scene change references from the first frame at the
+final position, rather than from the sweep.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/af.cpp | 22 ++++++++++++++++++++++
+ src/ipa/simple/algorithms/af.h   |  1 +
+ 2 files changed, 23 insertions(+)
+
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+index e52597d9..930b7347 100644
+--- a/src/ipa/simple/algorithms/af.cpp
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -45,6 +45,12 @@ static constexpr unsigned int kChangedFrames = 15;
+ /* The scene is steady when both vary less than this, frame to frame */
+ static constexpr double kSteadyRatio = 0.08;
+ static constexpr unsigned int kSteadyFrames = 10;
++/*
++ * A coarse sweep whose best contrast is not this much above its worst saw
++ * no peak (a dark or featureless scene, where noise sets the contrast): its
++ * best position is noise. Park the lens mid-range instead.
++ */
++static constexpr double kPeakRatio = 1.15;
+ /* A climb step must improve the contrast by this much to count */
+ static constexpr double kClimbGain = 1.03;
+ 
+@@ -91,6 +97,7 @@ void Af::startSweep(IPAContext &context, State state, int32_t from,
+ 	step_ = std::max(step, 1);
+ 	end_ = to;
+ 	best_ = 0.0;
++	worst_ = 0.0;
+ 	bestPosition_ = from;
+ 	falling_ = 0;
+ 
+@@ -101,6 +108,9 @@ void Af::startSweep(IPAContext &context, State state, int32_t from,
+ 
+ void Af::sweep(IPAContext &context, double sharpness)
+ {
++	if (!worst_ || sharpness < worst_)
++		worst_ = sharpness;
++
+ 	if (sharpness > best_) {
+ 		best_ = sharpness;
+ 		bestPosition_ = position_;
+@@ -116,6 +126,15 @@ void Af::sweep(IPAContext &context, double sharpness)
+ 
+ 	const AfConfiguration &af = context.configuration.af;
+ 
++	if (state_ == State::Coarse && best_ < worst_ * kPeakRatio) {
++		LOG(IPASoftAf, Debug)
++			<< "No peak (contrast " << worst_ << "-" << best_
++			<< "), parking mid-range";
++		bestPosition_ = (af.min + af.max) / 2;
++		finish(context);
++		return;
++	}
++
+ 	if (state_ == State::Coarse) {
+ 		int32_t span = (af.max - af.min) / kCoarseSteps;
+ 		startSweep(context, State::Fine, bestPosition_ - span,
+@@ -276,9 +295,12 @@ void Af::process(IPAContext &context,
+ 		climb(context, sharpness);
+ 		break;
+ 	case State::Focused:
++		/* The references come from the first frame at the final position. */
+ 		if (!referenceBrightness_) {
+ 			referenceBrightness_ = brightness;
+ 			lastBrightness_ = brightness;
++			reference_ = sharpness;
++			last_ = sharpness;
+ 		}
+ 		watch(context, sharpness, brightness);
+ 		break;
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+index 91bfa01e..dcef87c8 100644
+--- a/src/ipa/simple/algorithms/af.h
++++ b/src/ipa/simple/algorithms/af.h
+@@ -50,6 +50,7 @@ private:
+ 	int32_t end_;
+ 	int32_t bestPosition_;
+ 	double best_;
++	double worst_;
+ 	unsigned int falling_;
+ 	int32_t climbStart_;
+ 	int32_t climbDirection_;
+-- 
+2.47.3
+

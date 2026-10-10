@@ -1,0 +1,44 @@
+From 6fd0d91010da36816ab2f508b922ba93cf515a00 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 16:32:23 +0200
+Subject: [PATCH 27/31] ipa: simple: agc: Default to no binning gain
+
+On the S5K4H5YC the binned mode is as bright as the full resolution
+one at equal exposure and gain, as its binning averages the pixels.
+Do not assume summing binning by default: default binningGain to 1.
+
+Assisted-by: LLM
+---
+ src/ipa/simple/algorithms/agc.cpp | 2 +-
+ src/ipa/simple/algorithms/agc.h   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a06975cf..cad3799f 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -68,7 +68,7 @@ int Agc::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData
+ 	msvMin_ = tuningData["msvMin"].get<float>(kExposureMSVMinDefault);
+ 	saturatedMax_ = tuningData["saturatedMax"].get<double>(kSaturatedMaxDefault);
+ 	saturatedMin_ = saturatedMax_ / 2;
+-	binningGain_ = tuningData["binningGain"].get<double>(4.0);
++	binningGain_ = tuningData["binningGain"].get<double>(1.0);
+ 	return 0;
+ }
+ 
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 0a13f756..81ea9845 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -42,7 +42,7 @@ private:
+ 	double saturatedMax_;
+ 	double saturatedMin_;
+ 	/* How much brighter a pixel binned by two is, from the tuning file */
+-	double binningGain_ = 4.0;
++	double binningGain_ = 1.0;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.47.3
+

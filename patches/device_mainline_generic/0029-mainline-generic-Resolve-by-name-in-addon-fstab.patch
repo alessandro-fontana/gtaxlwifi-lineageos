@@ -1,0 +1,53 @@
+From f40f9f7637ce072cc15f167369fff4063a41d28a Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 29/33] mainline/generic: Resolve by-name in addon fstab
+
+/dev/block/by-name links are only created by the second-stage ueventd.
+Resolve addon fstab entries using them against the GPT partition names
+found by generic_init.
+
+Assisted-by: LLM
+Change-Id: I3f245e4b3d8a2becb39cfbd56c712eea272f0bd4
+---
+ services/generic_init/mount_handler.cpp | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/services/generic_init/mount_handler.cpp b/services/generic_init/mount_handler.cpp
+index 5965a26..7357645 100644
+--- a/services/generic_init/mount_handler.cpp
++++ b/services/generic_init/mount_handler.cpp
+@@ -755,6 +755,22 @@ void OnBlockDeviceAdd(const android::init::Uevent& uevent, const std::string& de
+     UpdateMountInfo(block_devices->at(devpath));
+ }
+ 
++// /dev/block/by-name links only exist after the second-stage ueventd:
++// resolve them against the GPT partition names found while scanning.
++void ResolveByNameBlockDevice(FstabEntry* entry) {
++    const std::string kByName = "/dev/block/by-name/";
++    if (!StartsWith(entry->blk_device, kByName)) return;
++    const std::string name = entry->blk_device.substr(kByName.size());
++    for (const auto& [devpath, info] : *block_devices) {
++        if (info->is_partition && info->partname == name) {
++            LOG(INFO) << "Addon fstab: " << entry->blk_device << " is " << devpath;
++            entry->blk_device = devpath;
++            return;
++        }
++    }
++    LOG(INFO) << "Addon fstab: no partition named " << name;
++}
++
+ // TODO: Handle block device removal?
+ 
+ bool CanQuitUeventd(bool print_log) {
+@@ -1045,6 +1061,7 @@ void OnPostBlockDevices(bool is_recovery_mode) {
+ 
+     if (!is_recovery_mode && !addon_fstab.empty()) {
+         for (auto& entry : addon_fstab) {
++            ResolveByNameBlockDevice(&entry);
+             fstab.push_back(std::move(entry));
+         }
+     }
+-- 
+2.47.3
+

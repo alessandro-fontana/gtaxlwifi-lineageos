@@ -1,0 +1,69 @@
+From c66cefa97f4574957f84aec8953041b654875b87 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:24 +0200
+Subject: [PATCH 11/33] mainline/generic: Restorecon early /dev dirs
+
+generic_init creates /dev/dri, /dev/input, /dev/snd and /dev/dma_heap
+before the policy is loaded, so they stay tmpfs: ueventd relabels the
+nodes it handles but not existing directories. Restore their labels
+from init in early-init, via the system_ext init overlay.
+
+Assisted-by: LLM
+Change-Id: I2e3ea76f75efb46cabb857b3dc954218dc75d871
+---
+ configs/init/Android.bp        | 7 +++++++
+ configs/init/dev_restorecon.rc | 4 ++++
+ device.mk                      | 3 +++
+ sepolicy/private/init_dev.te   | 3 +++
+ 4 files changed, 17 insertions(+)
+ create mode 100644 configs/init/dev_restorecon.rc
+ create mode 100644 sepolicy/private/init_dev.te
+
+diff --git a/configs/init/Android.bp b/configs/init/Android.bp
+index 1276524..1037102 100644
+--- a/configs/init/Android.bp
++++ b/configs/init/Android.bp
+@@ -50,3 +50,10 @@ prebuilt_etc {
+     src: "ueventd.generic.rc",
+     vendor: true,
+ }
++
++prebuilt_etc {
++    name: "dev_restorecon.rc",
++    src: "dev_restorecon.rc",
++    sub_dir: "overlay-system_ext-etc-init",
++    vendor: true,
++}
+diff --git a/configs/init/dev_restorecon.rc b/configs/init/dev_restorecon.rc
+new file mode 100644
+index 0000000..7780e81
+--- /dev/null
++++ b/configs/init/dev_restorecon.rc
+@@ -0,0 +1,4 @@
++# generic_init creates these directories before the policy is loaded, and
++# ueventd only relabels the nodes in them.
++on early-init
++    restorecon /dev/dri /dev/input /dev/snd /dev/dma_heap
+diff --git a/device.mk b/device.mk
+index 3696e5e..489f17c 100644
+--- a/device.mk
++++ b/device.mk
+@@ -247,3 +247,6 @@ PRODUCT_COPY_FILES += \
+ PRODUCT_SYSTEM_PROPERTIES += \
+     sys.use_memfd=true \
+     persist.bluetooth.a2dp_aac.vbr_supported=true
++
++PRODUCT_PACKAGES += \
++    dev_restorecon.rc
+diff --git a/sepolicy/private/init_dev.te b/sepolicy/private/init_dev.te
+new file mode 100644
+index 0000000..9acf737
+--- /dev/null
++++ b/sepolicy/private/init_dev.te
+@@ -0,0 +1,3 @@
++# /dev directories created by generic_init before the policy.
++allow init tmpfs:dir relabelfrom;
++allow init { gpu_device input_device audio_device dmabuf_heap_device }:dir relabelto;
+-- 
+2.47.3
+

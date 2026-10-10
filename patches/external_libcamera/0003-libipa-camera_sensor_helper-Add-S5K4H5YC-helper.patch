@@ -1,0 +1,41 @@
+From 47211b71bf645bc7dfffa544a37f3f53cdd71b14 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 25 Sep 2026 16:56:51 +0200
+Subject: [PATCH 03/31] libipa: camera_sensor_helper: Add S5K4H5YC helper
+
+Add a camera sensor helper for the Samsung S5K4H5YC, with the SMIA
+black level of 64 at 10 bits and the linear analogue gain code in 1/32
+steps used by its driver.
+
+Assisted-by: LLM
+---
+ src/ipa/libipa/camera_sensor_helper.cpp | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index 20631c73..0f300c8f 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -522,6 +522,19 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("sr259", CameraSensorHelperSr259)
+ 
++class CameraSensorHelperS5k4h5yc : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5k4h5yc()
++	{
++		/* SMIA pedestal, 64 at 10 bits. */
++		blackLevel_ = 4096;
++		/* Analogue gain code in 1/32 steps (vendor driver). */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5k4h5yc", CameraSensorHelperS5k4h5yc)
++
+ class CameraSensorHelperImx219 : public CameraSensorHelper
+ {
+ public:
+-- 
+2.47.3
+

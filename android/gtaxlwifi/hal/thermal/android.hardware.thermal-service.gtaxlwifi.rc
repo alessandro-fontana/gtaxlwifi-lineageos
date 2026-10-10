@@ -1,4 +1,0 @@
-service vendor.hal_thermal /vendor/bin/hw/android.hardware.thermal-service.gtaxlwifi
-    class hal
-    user system
-    group system

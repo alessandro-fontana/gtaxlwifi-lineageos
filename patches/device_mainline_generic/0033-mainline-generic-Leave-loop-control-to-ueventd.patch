@@ -1,0 +1,36 @@
+From 18e766d7fb30a77f4e0c6ce8e80a203a6ae639ab Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:25 +0200
+Subject: [PATCH 33/33] mainline/generic: Leave loop-control to ueventd
+
+Nodes created by generic_init are labelled tmpfs until the second-stage
+ueventd relabels them, and apexd-bootstrap can open /dev/loop-control
+before that and be denied. Remove the node, so that apexd waits for
+ueventd to create it with the right label.
+
+Assisted-by: LLM
+Change-Id: Ief783bf79a57e289cc6f852f82643c538e035d62
+---
+ services/generic_init/first_stage_init.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/services/generic_init/first_stage_init.cpp b/services/generic_init/first_stage_init.cpp
+index 540a190..c59e66b 100644
+--- a/services/generic_init/first_stage_init.cpp
++++ b/services/generic_init/first_stage_init.cpp
+@@ -541,6 +541,12 @@ int FirstStageMain(int argc, char** argv) {
+     setenv(kEnvFirstStageStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(),
+            1);
+ 
++    // Every node created above is labelled tmpfs until the second-stage
++    // ueventd relabels it, and apexd-bootstrap may open /dev/loop-control
++    // before that happens. Without the node, apexd waits for ueventd to
++    // create it with the right label.
++    unlink("/dev/loop-control");
++
+     auto fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+     dup2(fd, STDOUT_FILENO);
+     dup2(fd, STDERR_FILENO);
+-- 
+2.47.3
+

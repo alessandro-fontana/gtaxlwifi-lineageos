@@ -1,0 +1,44 @@
+From 7f5e179d83ec8bea636a3b7ca4ab43de2be57469 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:09:00 +0200
+Subject: [PATCH] sensors-iio: Support RGBC ambient light sensors
+
+RGBC light sensors such as cm3323 and tcs3472 expose per-color
+intensities and a clear channel, but neither the "both" intensity
+channel nor an illuminance channel. Report the clear channel as the
+light sensor.
+
+Assisted-by: LLM
+Change-Id: I53c8e5dbeebc208e18fe4cd7574c88fa14917866
+---
+ enumeration.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/enumeration.c b/enumeration.c
+index 3b24a6a..e7792f4 100644
+--- a/enumeration.c
++++ b/enumeration.c
+@@ -91,6 +91,20 @@ sensor_catalog_entry_t sensor_catalog[] = {
+ 			{ DECLARE_NAMED_CHANNEL("intensity", "both") },
+ 		},
+ 	},
++	{
++		/*
++		 * RGBC light sensors (cm3323, tcs3472...) have no "both" or
++		 * illuminance channel: follow the clear one.
++		 */
++		.tag		= "intensity",
++		.shorthand	= "",
++		.type		= SENSOR_TYPE_INTERNAL_INTENSITY,
++		.num_channels	= 1,
++		.is_virtual	= 0,
++		.channel = {
++			{ DECLARE_NAMED_CHANNEL("intensity", "clear") },
++		},
++	},
+ 	{
+ 		.tag		= "illuminance",
+ 		.shorthand	= "",
+-- 
+2.47.3
+

@@ -1,0 +1,80 @@
+From 31477355b8a477ce665156711f4745c1513d9ba0 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 27 Sep 2026 12:25:59 +0200
+Subject: [PATCH] tinyhal: Report presented position, not written
+
+out_pcm_get_presentation_position() returned all the frames written so
+far, with the time at which the last of them would be heard. AudioFlinger
+expects the frames presented at the time of the timestamp: with the
+written count, a player's clock ran fast and playback never reached the
+end of the stream.
+
+Report the frames written minus those still queued in the ring buffer,
+at the kernel timestamp, and -ENODATA while the PCM is closed. Keep the
+counter in 64 bits.
+
+Assisted-by: LLM
+Change-Id: I7d0a0207f632424f5536463e0b16fd13a51a1763
+---
+ audio/audio_hw.c | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/audio/audio_hw.c b/audio/audio_hw.c
+index 35e0edb..08e1559 100644
+--- a/audio/audio_hw.c
++++ b/audio/audio_hw.c
+@@ -148,8 +148,7 @@ struct stream_out_pcm {
+ 
+     uint32_t hw_sample_rate;    /* Actual sample rate of hardware */
+     int hw_channel_count;       /* Actual number of output channels */
+-    unsigned int frames_written;
+-    struct timespec timestamp;
++    uint64_t frames_written;    /* Since the stream was opened, across standby */
+ };
+ 
+ #ifdef TINYHAL_COMPRESS_PLAYBACK
+@@ -843,7 +842,6 @@ static ssize_t out_pcm_write(struct audio_stream_out *stream, const void *buffer
+     ALOGV_IF(ret < 0, "out_pcm_write: pcm_write failed: %d", ret);
+     if (ret >= 0) {
+         out->frames_written += pcm_bytes_to_frames(out->pcm, bytes);
+-        get_pcm_timestamp(out->pcm, out->common.sample_rate, &out->timestamp, true /*is_output*/);
+     }
+ 
+ exit:
+@@ -869,16 +867,27 @@ static int out_pcm_get_presentation_position(const struct audio_stream_out *stre
+         return -EINVAL;
+     }
+     struct stream_out_pcm *out = (struct stream_out_pcm *)stream;
++    unsigned int avail;
++    uint64_t queued;
++    int ret = -ENODATA;
+ 
+     ALOGV("+out_pcm_get_presentation_position(%p)", stream);
+ 
+-    *frames = out->frames_written;
+-    *timestamp = out->timestamp;
+-    ALOGV("%s: frames: %" PRIu64 ", timestamp (nsec): %" PRIu64, __func__, *frames,
+-          audio_utils_ns_from_timespec(timestamp));
++    /* Presented at the kernel timestamp: written minus still queued. */
++    pthread_mutex_lock(&out->common.lock);
++    if (out->pcm && pcm_get_htimestamp(out->pcm, &avail, timestamp) == 0) {
++        queued = pcm_get_buffer_size(out->pcm) - avail;
++        if (queued <= out->frames_written) {
++            *frames = out->frames_written - queued;
++            ret = 0;
++            ALOGV("%s: frames: %" PRIu64 ", timestamp (nsec): %" PRIu64, __func__, *frames,
++                  audio_utils_ns_from_timespec(timestamp));
++        }
++    }
++    pthread_mutex_unlock(&out->common.lock);
+ 
+-    ALOGV("-out_pcm_get_presentation_position(%p)", stream);
+-    return 0;
++    ALOGV("-out_pcm_get_presentation_position(%p) %d", stream, ret);
++    return ret;
+ }
+ 
+ static void do_close_out_pcm(struct audio_stream_out *stream)
+-- 
+2.47.3
+

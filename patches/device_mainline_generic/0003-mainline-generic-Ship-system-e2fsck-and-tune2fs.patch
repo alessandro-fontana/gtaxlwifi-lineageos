@@ -1,0 +1,37 @@
+From 6ab4a387c9c1d2f34dedb5598e3ee06b68f60038 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 9 Oct 2026 18:16:23 +0200
+Subject: [PATCH 03/33] mainline/generic: Ship system e2fsck and tune2fs
+
+fs_mgr runs /system/bin/tune2fs and /system/bin/e2fsck to add the ext4
+encrypt and verity features before mounting a partition. /data is
+mounted by the second stage init, after switching to the system root,
+so only the system variants can be used there.
+
+Assisted-by: LLM
+Change-Id: Iabca9cacd2be46c9ff4d84390e65e3f690f1b3d9
+---
+ device.mk | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/device.mk b/device.mk
+index 6069d3d..f84b99e 100644
+--- a/device.mk
++++ b/device.mk
+@@ -47,6 +47,13 @@ $(call inherit-product, frameworks/native/build/tablet-10in-xhdpi-2048-dalvik-he
+ PRODUCT_PACKAGES += \
+     get_display_ppi
+ 
++# Filesystem tools
++# fs_mgr runs the system tune2fs and e2fsck before mounting /data from the
++# second stage init.
++PRODUCT_PACKAGES += \
++    e2fsck \
++    tune2fs
++
+ # Graphics
+ PRODUCT_PACKAGES += \
+     amdgpu.ids
+-- 
+2.47.3
+

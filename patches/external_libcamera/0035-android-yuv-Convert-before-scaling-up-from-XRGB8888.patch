@@ -1,0 +1,51 @@
+From ab87702db0f40f972b08d3352f1fdbc81d186e4b Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 10 Oct 2026 12:27:31 +0200
+Subject: [PATCH 35/35] android: yuv: Convert before scaling up from XRGB8888
+
+Scaling the XRGB8888 source up and then converting it moves 4 bytes per
+destination pixel twice. When scaling up, convert the crop to NV12
+first and scale the NV12 image, which is smaller.
+
+Assisted-by: LLM
+---
+ src/android/yuv/post_processor_yuv.cpp | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
+index 1241aea7..bb9ff572 100644
+--- a/src/android/yuv/post_processor_yuv.cpp
++++ b/src/android/yuv/post_processor_yuv.cpp
+@@ -136,6 +136,29 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+ 
+ 			const uint8_t *crop = src + ((sh - ch) / 2) * srcStride +
+ 					      ((sw - cw) / 2) * 4;
++
++			/* Scaling up: convert first, then scale the smaller NV12. */
++			if (static_cast<uint64_t>(cw) * ch < static_cast<uint64_t>(dw) * dh) {
++				const size_t lumaSize = static_cast<size_t>(cw) * ch;
++				scaled_.resize(lumaSize * 3 / 2);
++				ret = libyuv::ARGBToNV12(crop, srcStride,
++							 scaled_.data(), cw,
++							 scaled_.data() + lumaSize, cw,
++							 cw, ch);
++				if (ret)
++					break;
++				ret = libyuv::NV12Scale(scaled_.data(), cw,
++							scaled_.data() + lumaSize, cw,
++							cw, ch,
++							destination->plane(0).data(),
++							destination->stride(0),
++							destination->plane(1).data(),
++							destination->stride(1),
++							dw, dh,
++							libyuv::FilterMode::kFilterBilinear);
++				break;
++			}
++
+ 			scaled_.resize(static_cast<size_t>(dw) * dh * 4);
+ 			ret = libyuv::ARGBScale(crop, srcStride, cw, ch,
+ 						scaled_.data(), dw * 4, dw, dh,
+-- 
+2.47.3
+

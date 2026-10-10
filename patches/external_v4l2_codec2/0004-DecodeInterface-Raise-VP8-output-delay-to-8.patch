@@ -1,0 +1,34 @@
+From 59b3bf52d6874480474db3c9a52385116c66c2cf Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 26 Sep 2026 17:48:05 +0200
+Subject: [PATCH 4/8] DecodeInterface: Raise VP8 output delay to 8
+
+The output delay also sets how many buffers the output surface grants.
+A stateful V4L2 decoder may hold more frames than the three VP8
+references: the Exynos MFC asks for a DPB of 8 and never gets its
+buffers with a delay of 3. Use 8, as for VP9 and AV1.
+
+Assisted-by: LLM
+Change-Id: I61b082d03480b6579452d2716d03a69169ff3a46
+---
+ components/DecodeInterface.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index f1eb42a..35b3171 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -467,7 +467,9 @@ uint32_t DecodeInterface::getOutputDelay(VideoCodec codec) {
+         // if number of frames in components is less then the number of maximum reference frames
+         // that could be held by decoder.
+         // Reference: RFC 6386 Section 3. Compressed Frame Types
+-        return 3;
++        // Stateful decoders may hold more frames than that (the Exynos MFC
++        // asks for 8), and the delay sets how many buffers the surface grants.
++        return 8;
+     case VideoCodec::VP9:
+         // Reference: https://www.webmproject.org/vp9/levels/
+         return 8;
+-- 
+2.47.3
+
