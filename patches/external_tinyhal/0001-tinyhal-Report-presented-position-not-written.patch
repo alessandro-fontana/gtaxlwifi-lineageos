@@ -1,4 +1,4 @@
-From 31477355b8a477ce665156711f4745c1513d9ba0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sun, 27 Sep 2026 12:25:59 +0200
 Subject: [PATCH] tinyhal: Report presented position, not written

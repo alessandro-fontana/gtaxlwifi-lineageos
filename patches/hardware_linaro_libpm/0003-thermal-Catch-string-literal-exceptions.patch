@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 10 Oct 2026 19:15:27 +0200
+Subject: [PATCH 3/3] thermal: Catch string literal exceptions
+
+The Thermal constructors throw string literals, which the
+std::string handler does not catch: the service aborted without
+logging why.
+
+Assisted-by: LLM
+Change-Id: I17d3c4e2f55928ba2225702b82141e67d6bd7acc
+---
+ hal/thermal/src/service.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/hal/thermal/src/service.cpp b/hal/thermal/src/service.cpp
+index a3b9e6c..b0b03d7 100644
+--- a/hal/thermal/src/service.cpp
++++ b/hal/thermal/src/service.cpp
+@@ -101,6 +101,12 @@ int main(int /* argc */, char** /* argv */)
+ 		return shutdown(THERMAL_HAL_INTERNAL_ERROR);
+ 	}
+ 
++	// The constructors throw string literals
++	catch(const char *error) {
++		LOG(ERROR) << "Exception when creating Thermal object error: " << error;
++		return shutdown(THERMAL_HAL_INTERNAL_ERROR);
++	}
++
+ 	//
+ 	// No threads for the transport layer. They are not needed for
+ 	// our purpose.  Furthermore, adding threads will lead us to
+-- 
+2.47.3
+

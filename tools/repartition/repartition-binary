@@ -1,0 +1,127 @@
+#!/sbin/sh
+#
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Converts the factory partition table of the SM-T580 to the layout
+# LineageOS 23.2 installs on, once, before the first install. Runs in
+# LineageOS Recovery (no awk there).
+#
+# SYSTEM (p19) becomes super; vbmeta, metadata and misc are added as p23-p25
+# where USERDATA started, and USERDATA (p22) starts after them: all data is
+# erased. p1-p18, CACHE and HIDDEN keep their factory names and LBAs. A
+# table converted before p23 was named vbmeta only gets the new name, and
+# keeps its data. An already converted table is left alone, an unknown one
+# stops everything.
+#
+# Recovery arguments: $1 API version, $2 fd for ui_print, $3 zip path.
+
+OUTFD=$2
+ZIP=$3
+DISK=/dev/block/mmcblk0
+T=/tmp/gtaxl
+LOG=$T/repartition.log
+# first LBAs of metadata, misc and USERDATA in the new table (gtaxl-gpt.c)
+HEADS="8265728 8298496 8300544"
+USERDATA_FIRST=8300544
+
+# /proc/self/fd, not >&"$OUTFD": the recovery's shell rejects fds over 9 there
+ui() { printf 'ui_print %s\nui_print\n' "$*" >> /proc/self/fd/"$OUTFD"; echo "$*" >> "$LOG"; }
+die() { ui "ERROR: $*"; ui "Log in $LOG"; exit 1; }
+step() { ui "- $*"; }
+first() { echo "$1"; }
+
+rm -rf "$T"; mkdir -p "$T"; : > "$LOG"
+ui "gtaxlwifi: partition table for LineageOS"
+
+[ "$(getprop ro.product.device)" = gtaxlwifi ] || [ "$(getprop ro.build.product)" = gtaxlwifi ] \
+	|| die "this zip is for gtaxlwifi (SM-T580) only"
+case "$(first $(df "$ZIP" 2>/dev/null | tail -1))" in
+	/dev/block/mmcblk0*|*/by-name/*) die "the zip is on internal storage: use adb sideload or a microSD card" ;;
+esac
+for x in unzip dd blockdev cmp; do
+	command -v $x >/dev/null 2>&1 || die "$x missing in this recovery"
+done
+
+cd "$T" || die "cannot use $T"
+unzip -o -q "$ZIP" gtaxl/gtaxl-gpt gtaxl/gtaxl-dm -d "$T" || die "incomplete zip"
+chmod 755 "$T/gtaxl/gtaxl-gpt" "$T/gtaxl/gtaxl-dm"
+
+for m in /system_root /system /vendor /data /sdcard /cache /metadata /persist; do
+	umount "$m" 2>/dev/null
+done
+grep -q "^${DISK}p" /proc/mounts && die "partitions still mounted: $(grep -o "^${DISK}p[0-9]*" /proc/mounts | tr '\n' ' ')"
+
+SECTORS=$(cat /sys/block/mmcblk0/size)
+dd if=$DISK of=$T/gpt.bin bs=512 skip=1 count=33 2>>"$LOG" || die "reading the GPT"
+STATUS=$("$T/gtaxl/gtaxl-gpt" status "$T/gpt.bin" "$SECTORS"); RC=$?
+ui "Partition table: $STATUS"
+case $RC in
+0)	;;
+3)	ui "Already converted: nothing to do. Install LineageOS."; exit 0 ;;
+4)	die "older layout: install gtaxlwifi-revert-to-factory.zip first, then this zip" ;;
+5)	RENAME=1 ;;
+*)	die "partition table not recognised, nothing written" ;;
+esac
+
+write_table() {
+	dd if="$T/backup.bin" of=$DISK bs=512 seek=$((SECTORS - 33)) count=33 2>>"$LOG" || die "writing the backup table"
+	dd if="$T/primary.bin" of=$DISK bs=512 seek=1 count=33 2>>"$LOG" || die "writing the primary table"
+	sync
+	dd if=$DISK of=$T/readback.bin bs=512 skip=1 count=33 2>>"$LOG"
+	cmp -s "$T/readback.bin" "$T/primary.bin" || die "the table does not read back the same"
+}
+
+if [ -n "$RENAME" ]; then
+	step "renaming p23 to vbmeta, data kept"
+	"$T/gtaxl/gtaxl-gpt" migrate "$T/gpt.bin" "$SECTORS" "$T/primary.bin" "$T/backup.bin" >>"$LOG" 2>&1 \
+		|| die "computing the new table, nothing written"
+	write_table
+	# the recovery keeps the logical partitions of super mapped, and the
+	# kernel refuses to reread a table while p19 is open
+	printf '%s 0 0\n' system product system_ext vendor vendor_dlkm system_dlkm > $T/lp-names.txt
+	"$T/gtaxl/gtaxl-dm" --remove $T/lp-names.txt >>"$LOG" 2>&1
+	blockdev --rereadpt $DISK 2>>"$LOG" && sleep 2 && [ -e /dev/block/by-name/vbmeta ] \
+		|| die "the new name is written: reboot to the recovery, then install LineageOS"
+	ui ""
+	ui "Done! Now install LineageOS:"
+	ui "Apply update -> Apply from ADB, no reboot needed."
+	exit 0
+fi
+
+# the factory table goes to cache, as the revert zip does
+mkdir -p /tmp/gtaxl-cache
+if mount -t ext4 ${DISK}p20 /tmp/gtaxl-cache 2>>"$LOG"; then
+	C=/tmp/gtaxl-cache/gtaxl-first
+	[ -e $C/gpt-lba1-33.bin ] && C=/tmp/gtaxl-cache/gtaxl-previous
+	mkdir -p $C
+	cp "$T/gpt.bin" $C/gpt-lba1-33.bin
+	dd if=$DISK of=$C/gpt-backup.bin bs=512 skip=$((SECTORS - 33)) count=33 2>>"$LOG"
+	sync; umount /tmp/gtaxl-cache
+	step "factory table saved in cache/${C##*/}"
+fi
+
+step "computing the new table"
+"$T/gtaxl/gtaxl-gpt" migrate "$T/gpt.bin" "$SECTORS" "$T/primary.bin" "$T/backup.bin" >>"$LOG" 2>&1 \
+	|| die "computing the new table, nothing written"
+step "writing the table (backup, then primary)"
+write_table
+
+# Android formats metadata and USERDATA at the first start only if their
+# heads are empty
+step "erasing the old data"
+for lba in $HEADS; do
+	dd if=/dev/zero of=$DISK bs=512 seek=$lba count=2048 2>>"$LOG" || die "zeroing LBA $lba"
+done
+sync
+
+blockdev --rereadpt $DISK 2>>"$LOG" \
+	|| die "the kernel did not reread the table. The new table is written: reboot to the recovery and install LineageOS"
+sleep 2
+[ "$(cat /sys/class/block/mmcblk0p22/start)" = $USERDATA_FIRST ] && [ -e /sys/class/block/mmcblk0p25 ] \
+	|| die "the kernel still sees the old partitions. The new table is written: reboot to the recovery and install LineageOS"
+
+ui ""
+ui "Done! Now install LineageOS:"
+ui "Apply update -> Apply from ADB, no reboot needed."
+exit 0

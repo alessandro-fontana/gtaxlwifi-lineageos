@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sun, 11 Oct 2026 21:58:31 +0200
+Subject: [PATCH 1/8] DecodeInterface: Allow a smaller input buffer size
+
+The input buffer size for up to 1080p is 16 MB, and four times that for
+4K. Each buffer is imported whole by the driver: the Exynos MFC maps
+every V4L2 OUTPUT buffer into an IOVA space of 256 MB, which sixteen
+16 MB buffers exceed, and decoding fails.
+
+Read the size for up to 1080p from
+ro.vendor.v4l2_codec2.decoder.input_buffer_size, with the current 16 MB
+as the default.
+
+Assisted-by: LLM
+Change-Id: I80f224b23520d4c7622372cfd7d40ca29477e9d9
+---
+ components/DecodeInterface.cpp | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index 558c0ea..dd253db 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -10,6 +10,7 @@
+ #include <C2PlatformSupport.h>
+ #include <SimpleC2Interface.h>
+ #include <android/hardware/graphics/common/1.0/types.h>
++#include <cutils/properties.h>
+ #include <log/log.h>
+ #include <media/stagefright/foundation/MediaDefs.h>
+ 
+@@ -26,9 +27,15 @@ constexpr size_t k4KArea = 3840 * 2160;
+ // when using higher bitrates, like 1Mb/s on slower devices. Also, this brings up compability
+ // with the Chrome browser as it is using 2MB buffer size for a 1080p stream, ref:
+ // https://source.chromium.org/chromium/chromium/src/+/main:media/gpu/gpu_video_encode_accelerator_helpers.cc;l=25
+-constexpr size_t kInputBufferSizeFor1080p = 16 * 1024 * 1024;  // 16MB
+-// Input bitstream buffer size for up to 4k streams.
+-constexpr size_t kInputBufferSizeFor4K = 4 * kInputBufferSizeFor1080p;
++constexpr size_t kDefaultInputBufferSizeFor1080p = 16 * 1024 * 1024;  // 16MB
++
++// Each input buffer is imported whole by the driver, so devices whose decoder
++// can only address a small IOVA space may need smaller ones.
++size_t inputBufferSizeFor1080p() {
++    static const size_t size = property_get_int32("ro.vendor.v4l2_codec2.decoder.input_buffer_size",
++                                                  kDefaultInputBufferSizeFor1080p);
++    return size;
++}
+ 
+ size_t calculateInputBufferSize(size_t area) {
+     if (area > k4KArea) {
+@@ -37,8 +44,8 @@ size_t calculateInputBufferSize(size_t area) {
+     }
+ 
+     // Enlarge the input buffer for 4k video
+-    if (area > k1080pArea) return kInputBufferSizeFor4K;
+-    return kInputBufferSizeFor1080p;
++    if (area > k1080pArea) return 4 * inputBufferSizeFor1080p();
++    return inputBufferSizeFor1080p();
+ }
+ }  // namespace
+ 
+@@ -328,7 +335,8 @@ DecodeInterface::DecodeInterface(const std::string& name,
+ 
+     addParameter(
+             DefineParam(mMaxInputSize, C2_PARAMKEY_INPUT_MAX_BUFFER_SIZE)
+-                    .withDefault(new C2StreamMaxBufferSizeInfo::input(0u, kInputBufferSizeFor1080p))
++                    .withDefault(new C2StreamMaxBufferSizeInfo::input(
++                            0u, inputBufferSizeFor1080p()))
+                     .withFields({
+                             C2F(mMaxInputSize, value).any(),
+                     })
+-- 
+2.47.3
+

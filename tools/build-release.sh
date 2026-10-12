@@ -13,6 +13,7 @@
 # Output:
 #   gtaxlwifi-boot.img                BOOT: the loader with kernel, DTB, ramdisk
 #   gtaxlwifi-recovery.img            RECOVERY: the loader with the recovery
+#   gtaxlwifi-repartition.zip         once, before the first install
 #   gtaxlwifi-los23-install.zip       install and update, signed
 #   gtaxlwifi-revert-to-factory.zip   back to the factory partition table
 #   gtaxlwifi-odin-AP.tar.md5         both images for Odin's AP slot
@@ -35,9 +36,10 @@ R=$(realpath -m "${1:?output dir}")
 die() { echo "build-release: $*" >&2; exit 1; }
 
 # the device tree the build used is the repository's
-if [ "$DEV" != "$BUILT_DEV" ] && diff -rq "$DEV" "$BUILT_DEV" | grep -vE '\.patches|boot-cmdline|firmware|proprietary|keys|tools' | grep -q .; then
-	diff -rq "$DEV" "$BUILT_DEV" | grep -vE '\.patches|boot-cmdline|firmware|proprietary|keys|tools' >&2
-	die "the device tree differs from the one the build used: copy it, then rebuild"
+# (diff exits 1 on differences: under pipefail the output is read first)
+if [ "$DEV" != "$BUILT_DEV" ]; then
+	DIFFS=$(diff -rq "$DEV" "$BUILT_DEV" | grep -vE '\.patches|boot-cmdline|firmware|proprietary|keys|tools|tests|__pycache__' || true)
+	[ -z "$DIFFS" ] || { echo "$DIFFS" >&2; die "the device tree differs from the one the build used: copy it, then rebuild"; }
 fi
 TF=$OUT/obj/PACKAGING/target_files_intermediates/lineage_gtaxlwifi-target_files.zip
 [ -f "$TF" ] || die "no target files: m target-files-package otatools"
@@ -72,7 +74,9 @@ export PATH=$TOP/out/host/linux-x86/bin:$PATH
 	> "$R/ota.log" 2>&1 || { tail -20 "$R/ota.log" >&2; die "ota_from_target_files failed, see $R/ota.log"; }
 unzip -p "$T/signed-target_files.zip" IMAGES/recovery.img > "$R/gtaxlwifi-recovery.img"
 unzip -p "$T/signed-target_files.zip" IMAGES/boot.img > "$R/gtaxlwifi-boot.img"
-TOP="$TOP" DEVICE="$BUILT_DEV" KEY="$TOP/$KEYS/releasekey" \
+TOP="$TOP" KEY="$TOP/$KEYS/releasekey" \
+	"$HERE/repartition/repartition-zip.sh" "$R/gtaxlwifi-repartition.zip" >/dev/null
+TOP="$TOP" KEY="$TOP/$KEYS/releasekey" \
 	"$HERE/revert/revert-zip.sh" "$R/gtaxlwifi-revert-to-factory.zip" >/dev/null
 
 # Odin: one tar for the AP slot, flashing BOOT and RECOVERY together. Plain
@@ -84,8 +88,8 @@ cp "$R/gtaxlwifi-recovery.img" "$T/recovery.img"
 	&& md5sum -t gtaxlwifi-odin-AP.tar >> gtaxlwifi-odin-AP.tar )
 mv "$T/gtaxlwifi-odin-AP.tar" "$R/gtaxlwifi-odin-AP.tar.md5"
 
-( cd "$R" && sha256sum gtaxlwifi-boot.img gtaxlwifi-recovery.img gtaxlwifi-los23-install.zip \
-	gtaxlwifi-revert-to-factory.zip gtaxlwifi-odin-AP.tar.md5 > SHA256SUMS )
+( cd "$R" && sha256sum gtaxlwifi-boot.img gtaxlwifi-recovery.img gtaxlwifi-repartition.zip \
+	gtaxlwifi-los23-install.zip gtaxlwifi-revert-to-factory.zip gtaxlwifi-odin-AP.tar.md5 > SHA256SUMS )
 echo
 grep -m1 '^ro.lineage.version=' "$OUT/product/etc/build.prop" || true
 ls -l "$R"

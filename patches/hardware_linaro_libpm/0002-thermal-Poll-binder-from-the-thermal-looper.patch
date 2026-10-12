@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Sat, 10 Oct 2026 19:15:22 +0200
+Subject: [PATCH 2/3] thermal: Poll binder from the thermal looper
+
+ABinderProcess_joinThreadPool() never returns, so the looper holding
+the netlink events socket was never polled. Handle the binder commands
+from the same looper instead.
+
+Assisted-by: LLM
+Change-Id: Ic5c9d3633697277ea7dd5b18e76b879451d1ce92
+---
+ hal/thermal/src/service.cpp | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/hal/thermal/src/service.cpp b/hal/thermal/src/service.cpp
+index 3df20d7..a3b9e6c 100644
+--- a/hal/thermal/src/service.cpp
++++ b/hal/thermal/src/service.cpp
+@@ -52,6 +52,14 @@ static int transportCallback(int fd, __attribute__((unused)) int event,
+ 	return 1;
+ }
+ 
++static int binderCallback(__attribute__((unused)) int fd,
++			  __attribute__((unused)) int event,
++			  __attribute__((unused)) void *data)
++{
++	ABinderProcess_handlePolledCommands();
++	return 1;
++}
++
+ static bool setupTransportCallback(Looper *looper)
+ {
+ 	int fd;
+@@ -109,8 +117,21 @@ int main(int /* argc */, char** /* argv */)
+             AServiceManager_addService(thermal->asBinder().get(), instance.c_str());
+ 	CHECK(status == STATUS_OK);
+ 
+-	ABinderProcess_joinThreadPool();
+-	looper->pollAll(-1);
++	// Poll binder from the thermal looper: ABinderProcess_joinThreadPool()
++	// never returns, so the netlink events would never be read.
++	int binder_fd = -1;
++	if (ABinderProcess_setupPolling(&binder_fd) != STATUS_OK || binder_fd < 0) {
++		LOG(ERROR) << "Failed to set up binder polling";
++		return shutdown(THERMAL_HAL_INTERNAL_ERROR);
++	}
++
++	if (!looper->addFd(binder_fd, 0, Looper::EVENT_INPUT, binderCallback, NULL)) {
++		LOG(ERROR) << "Failed to add the binder file descriptor to the mainloop";
++		return shutdown(THERMAL_HAL_INTERNAL_ERROR);
++	}
++
++	for (;;)
++		looper->pollAll(-1);
+ 
+ 	return EXIT_FAILURE;  // should not reach
+ }
+-- 
+2.47.3
+
