@@ -1,8 +1,7 @@
-From 70135b2e27b683e2b309abfa75875d1438117715 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:06:34 +0200
-Subject: [PATCH 06/31] libcamera: camera_lens: Close the lens subdev while
- unused
+Subject: [PATCH] libcamera: camera_lens: Close the lens subdev while unused
 
 An open lens subdev keeps the lens driver runtime active, and powered,
 for as long as the camera manager exists. On modules where the lens

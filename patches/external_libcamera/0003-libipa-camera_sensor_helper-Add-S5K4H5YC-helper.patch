@@ -1,7 +1,7 @@
-From 47211b71bf645bc7dfffa544a37f3f53cdd71b14 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 16:56:51 +0200
-Subject: [PATCH 03/31] libipa: camera_sensor_helper: Add S5K4H5YC helper
+Subject: [PATCH] libipa: camera_sensor_helper: Add S5K4H5YC helper
 
 Add a camera sensor helper for the Samsung S5K4H5YC, with the SMIA
 black level of 64 at 10 bits and the linear analogue gain code in 1/32

@@ -1,7 +1,7 @@
-From b4f12793a37b3d815298ee1944e1cd73590edc6c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 20:05:38 +0200
-Subject: [PATCH 15/31] android: Add flash LED support
+Subject: [PATCH] android: Add flash LED support
 
 A camera may name its flash LED, a LED class device, in the HAL
 configuration file. The HAL then reports a flash unit and the flash AE

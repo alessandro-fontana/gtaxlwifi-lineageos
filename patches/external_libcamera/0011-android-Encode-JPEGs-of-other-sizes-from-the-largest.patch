@@ -1,8 +1,7 @@
-From 463c1ea9a7afdc4ce0caed676e2a10591aeffe37 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:34:07 +0200
-Subject: [PATCH 11/31] android: Encode JPEGs of other sizes from the largest
- stream
+Subject: [PATCH] android: Encode JPEGs of other sizes from the largest stream
 
 With a software ISP the camera has a single output. A JPEG stream whose
 size matches no other stream, such as a 16:9 photo with a 4:3 preview,

@@ -1,7 +1,7 @@
-From 25b2a700b745a5ff8a00290c1fdb16aa49659735 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 9 Oct 2026 20:55:27 +0200
-Subject: [PATCH 32/35] android: Honour the gralloc plane layout of YUV buffers
+Subject: [PATCH] android: Honour the gralloc plane layout of YUV buffers
 
 The generic camera buffer backend assumed rows as wide as the image and
 planes packed one after the other. Allocators pad rows to their own
@@ -56,7 +56,7 @@ index 7795ac90..fd527d75 100644
  	for (unsigned int i = 0; i < numPlanes; ++i) {
  		const unsigned int planeSize = info.planeSize(size, i);
 diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
-index d1be1a9a..81c988be 100644
+index 27cc9b08..3fd8542e 100644
 --- a/src/android/yuv/post_processor_yuv.cpp
 +++ b/src/android/yuv/post_processor_yuv.cpp
 @@ -104,9 +104,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
@@ -83,7 +83,7 @@ index d1be1a9a..81c988be 100644
  					 destinationSize_.width,
  					 destinationSize_.height);
  		break;
-@@ -155,9 +155,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+@@ -178,9 +178,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
  
  		ret = libyuv::ARGBToNV12(src, srcStride,
  					 destination->plane(0).data(),
@@ -95,7 +95,7 @@ index d1be1a9a..81c988be 100644
  					 dw, dh);
  		break;
  	}
-@@ -201,14 +201,19 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
+@@ -224,14 +224,19 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
  			return false;
  		}
  	}
@@ -117,7 +117,7 @@ index d1be1a9a..81c988be 100644
  			return false;
  		}
  	}
-@@ -233,11 +238,5 @@ void PostProcessorYuv::calculateLengths(const StreamConfiguration &inCfg,
+@@ -256,11 +261,5 @@ void PostProcessorYuv::calculateLengths(const StreamConfiguration &inCfg,
  							sourceStride_[i]);
  	}
  

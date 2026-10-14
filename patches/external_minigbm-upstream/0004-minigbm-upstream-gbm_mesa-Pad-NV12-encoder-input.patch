@@ -1,8 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 9 Oct 2026 18:08:43 +0200
-Subject: [PATCH 4/5] minigbm-upstream: gbm_mesa: Pad NV12 encoder input to
- macroblocks
+Subject: [PATCH 4/5] minigbm-upstream: gbm_mesa: Pad NV12 encoder input
 
 Hardware encoders work on whole 16x16 macroblocks: they may read the rows
 up to the next multiple of 16 and a little past the chroma plane. A

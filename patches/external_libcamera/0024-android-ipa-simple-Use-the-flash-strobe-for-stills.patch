@@ -1,7 +1,7 @@
-From ffe10e33dfc72cf2b871a57984ff0f22b6692d37 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 18:47:03 +0200
-Subject: [PATCH 30/31] android, ipa: simple: Use the flash strobe for stills
+Subject: [PATCH] android, ipa: simple: Use the flash strobe for stills
 
 Stills taken with the flash were lit by the torch, from the AE
 precapture to the capture. Light a still captured in the separate full
@@ -145,7 +145,7 @@ index 37206a84..33dc095a 100644
  		void queueRequest(
                  	const uint32_t frame,
 diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
-index 1d0ca9d6..c214b842 100644
+index 3926b63a..1287ecbf 100644
 --- a/src/android/camera_device.cpp
 +++ b/src/android/camera_device.cpp
 @@ -10,6 +10,7 @@
@@ -265,9 +265,9 @@ index 1d0ca9d6..c214b842 100644
 +				float ev = flashExposureValue();
 +				startControls.set(controls::ExposureValue, ev);
 +				strobe = true;
-+				LOG(HAL, Info) << "Still lit by the strobe, exposure value "
-+					       << ev << " (ambient " << flash_.ambient
-+					       << ", torch " << flash_.lit << ")";
++				LOG(HAL, Debug) << "Still lit by the strobe, exposure value "
++					        << ev << " (ambient " << flash_.ambient
++					        << ", torch " << flash_.lit << ")";
 +			}
 +		}
 +		ret = camera_->start(&startControls);
@@ -276,7 +276,7 @@ index 1d0ca9d6..c214b842 100644
  		LOG(HAL, Error) << "Still capture configuration failed: " << ret;
  		abortRequest(still);
 @@ -1695,6 +1775,11 @@ int CameraDevice::processStill(std::unique_ptr<Camera3RequestDescriptor> descrip
- 			       << " ms" << (done ? "" : " (timed out)");
+ 			        << " ms" << (done ? "" : " (timed out)");
  	}
  
 +	if (strobe) {
@@ -383,7 +383,7 @@ index 8890157a..e857c6c2 100644
  
  	exif.setFocalLength(1.0);
 diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
-index 85ebc313..5cab06a6 100644
+index 9a835517..445a5aa2 100644
 --- a/src/ipa/simple/algorithms/agc.cpp
 +++ b/src/ipa/simple/algorithms/agc.cpp
 @@ -63,6 +63,9 @@ static constexpr unsigned int kMaxWait = 8;
@@ -499,7 +499,7 @@ index a8128705..0ec230f7 100644
  
  	struct {
 diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
-index a820a4d6..6a67d79f 100644
+index a820a4d6..7ac74eb0 100644
 --- a/src/ipa/simple/soft_simple.cpp
 +++ b/src/ipa/simple/soft_simple.cpp
 @@ -5,7 +5,9 @@
@@ -568,7 +568,7 @@ index a820a4d6..6a67d79f 100644
 +	agc.scaled = true;
 +	agc.scaledPending = true;
 +
-+	LOG(IPASoft, Info)
++	LOG(IPASoft, Debug)
 +		<< "Starting with exposure value " << *ev << ": exposure "
 +		<< exposure << ", gain " << gain;
 +

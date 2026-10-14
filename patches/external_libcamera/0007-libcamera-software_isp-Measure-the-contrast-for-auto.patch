@@ -1,8 +1,7 @@
-From d840c2ce98105ae207d589dfddc4e68117d71206 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:06:34 +0200
-Subject: [PATCH 07/31] libcamera: software_isp: Measure the contrast for
- autofocus
+Subject: [PATCH] libcamera: software_isp: Measure the contrast for autofocus
 
 Add a sharpness measure to the software ISP statistics: the sum of the
 green differences between neighbouring samples, horizontally and

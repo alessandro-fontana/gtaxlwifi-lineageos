@@ -1,8 +1,7 @@
-From f1929fb9fb247719d9d75950e93591405d7703e3 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 13:50:45 +0200
-Subject: [PATCH 17/31] ipa: simple: agc: Wait for the sensor, step
- proportionally
+Subject: [PATCH] ipa: simple: agc: Wait for the sensor, step proportionally
 
 Exposure changes reach the sensor output some frames later. The AGC
 decided again on every frame, from frames still taken with the old

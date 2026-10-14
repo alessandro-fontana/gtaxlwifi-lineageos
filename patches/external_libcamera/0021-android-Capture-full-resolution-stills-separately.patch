@@ -1,7 +1,7 @@
-From 57cb59c768b1d7b3cb651a2cea293ff784ac5f8b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 16:24:22 +0200
-Subject: [PATCH 26/31] android: Capture full resolution stills separately
+Subject: [PATCH] android: Capture full resolution stills separately
 
 With a software ISP, preview and video run in the binned mode of the
 sensor: the full resolution mode costs four times the debayering, and
@@ -173,7 +173,7 @@ index c19f0876..a550c318 100644
  	bool afAvailable_ = false;
  	bool rawStreamAvailable_;
 diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
-index bfbc1127..7a711ecb 100644
+index bfbc1127..cb8bd7b3 100644
 --- a/src/android/camera_device.cpp
 +++ b/src/android/camera_device.cpp
 @@ -397,7 +397,9 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
@@ -441,11 +441,11 @@ index bfbc1127..7a711ecb 100644
 +		/* On a timeout, this cancels the request: reported as failed. */
 +		camera_->stop();
 +
-+		LOG(HAL, Info) << "Still capture: switch "
-+			       << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
-+			       << " ms, capture "
-+			       << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()
-+			       << " ms" << (done ? "" : " (timed out)");
++		LOG(HAL, Debug) << "Still capture: switch "
++			        << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
++			        << " ms, capture "
++			        << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()
++			        << " ms" << (done ? "" : " (timed out)");
 +	}
 +
 +	ret = camera_->configure(config_.get());

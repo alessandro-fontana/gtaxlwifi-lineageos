@@ -1,8 +1,7 @@
-From 058960d06c41c4e6b20fa0aa737d5eab58e5f5f4 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 14:14:50 +0200
-Subject: [PATCH 19/31] ipa: simple: lut: Read gamma and contrast from tuning
- file
+Subject: [PATCH] ipa: simple: lut: Read gamma and contrast from tuning file
 
 A plain 0.5 gamma lifts the shadows of a high contrast scene to a
 washed out grey. Read the gamma and a default contrast, the S-curve

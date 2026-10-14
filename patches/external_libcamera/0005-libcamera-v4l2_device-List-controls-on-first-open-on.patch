@@ -1,8 +1,7 @@
-From b93a78d706502b913ee9d7e18c5d49104986aef9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:06:34 +0200
-Subject: [PATCH 05/31] libcamera: v4l2_device: List controls on first open
- only
+Subject: [PATCH] libcamera: v4l2_device: List controls on first open only
 
 Each open created new ControlId instances and repointed the device's
 id map to them. A ControlInfoMap copied before a reopen, keyed by the

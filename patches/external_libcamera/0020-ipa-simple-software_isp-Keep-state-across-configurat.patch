@@ -1,8 +1,7 @@
-From 7e9447bc44a71e8588cc6bab5847829e0160f5e9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 16:16:56 +0200
-Subject: [PATCH 25/31] ipa: simple, software_isp: Keep state across
- configurations
+Subject: [PATCH] ipa: simple, software_isp: Keep state across configurations
 
 A still capture at full resolution reconfigures the camera in another
 sensor mode and back, within the same acquisition. The soft IPA
@@ -15,7 +14,8 @@ started from scratch, and the lens was closed on every stop.
   the new mode with.
 - The AGC remembers the last exposure per binning factor, restores it
   when coming back to a mode and converts it otherwise, using a
-  binningGain from the tuning file. The result is written to the
+  binningGain from the tuning file, 1 by default for sensors whose
+  binning averages the pixels. The result is written to the
   sensor before streaming starts.
 - AWB, CCM and AF keep their state, and AF leaves the lens in place.
 - The simple pipeline handler keeps the state within an acquisition,
@@ -251,14 +251,14 @@ index f8c20ae9..2e27bb88 100644
  	settle_ = kStartupFrames;
  	position_ = -1;
 diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
-index 15c598ea..a06975cf 100644
+index 15c598ea..3f1b64d5 100644
 --- a/src/ipa/simple/algorithms/agc.cpp
 +++ b/src/ipa/simple/algorithms/agc.cpp
 @@ -68,14 +68,68 @@ int Agc::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData
  	msvMin_ = tuningData["msvMin"].get<float>(kExposureMSVMinDefault);
  	saturatedMax_ = tuningData["saturatedMax"].get<double>(kSaturatedMaxDefault);
  	saturatedMin_ = saturatedMax_ / 2;
-+	binningGain_ = tuningData["binningGain"].get<double>(4.0);
++	binningGain_ = tuningData["binningGain"].get<double>(1.0);
  	return 0;
  }
  
@@ -310,7 +310,7 @@ index 15c598ea..a06975cf 100644
 +	int32_t lines = std::clamp(static_cast<int32_t>(std::lround(time / cfg.lineDuration)),
 +				   cfg.exposureMin, cfg.exposureMax);
 +	if (lines == cfg.exposureMax && time > lines * cfg.lineDuration)
-+		LOG(IPASoftExposure, Info)
++		LOG(IPASoftExposure, Debug)
 +			<< "Mode " << agc.bin << "x underexposed by "
 +			<< time / (lines * cfg.lineDuration);
 +
@@ -326,7 +326,7 @@ index 15c598ea..a06975cf 100644
  }
  
 diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
-index fcbf02fe..0a13f756 100644
+index fcbf02fe..81ea9845 100644
 --- a/src/ipa/simple/algorithms/agc.h
 +++ b/src/ipa/simple/algorithms/agc.h
 @@ -41,6 +41,8 @@ private:
@@ -334,7 +334,7 @@ index fcbf02fe..0a13f756 100644
  	double saturatedMax_;
  	double saturatedMin_;
 +	/* How much brighter a pixel binned by two is, from the tuning file */
-+	double binningGain_ = 4.0;
++	double binningGain_ = 1.0;
  };
  
  } /* namespace ipa::soft::algorithms */

@@ -1,7 +1,7 @@
-From aa58565fed0e0e237056fef0c3697241bc4dc398 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:06:34 +0200
-Subject: [PATCH 04/31] android, pipeline: simple: Fail requests of lost frames
+Subject: [PATCH] android, pipeline: simple: Fail requests of lost frames
 
 A buffer that the receiver marks as failed, on a DMA error, completed
 its request without a timestamp and with the output buffers never

@@ -1,8 +1,7 @@
-From 54ea902ae7f3a3c12a420802cf0b1e79665b531c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 14:13:58 +0200
-Subject: [PATCH 01/31] android: Build the software ISP IPA for the Exynos 7870
- CSIS
+Subject: [PATCH] android: Build the software ISP IPA for the Exynos 7870 CSIS
 
 The Android build files do not build the IPA module of the software
 ISP: without it IPAManager::createIPA() fails, and a raw Bayer sensor

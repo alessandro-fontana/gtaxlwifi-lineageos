@@ -1,7 +1,7 @@
-From a5917f54cc076f2b5955479b490a02a505ec2cd0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 10 Oct 2026 12:11:18 +0200
-Subject: [PATCH 34/35] android: Offer 1920x1080 above the stream size limit
+Subject: [PATCH] android: Offer 1920x1080 above the stream size limit
 
 1920x1080 is a mandatory size, and CameraX requests it for the preview
 on some devices whatever the camera lists; the framework then rounds it
@@ -122,7 +122,7 @@ index a550c318..c373ee65 100644
  	/* A focus lens driven by the IPA: Android's AF modes and one AF region */
  	bool afAvailable_ = false;
 diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
-index c214b842..b98b04a7 100644
+index 1287ecbf..ad0082d6 100644
 --- a/src/android/camera_device.cpp
 +++ b/src/android/camera_device.cpp
 @@ -913,6 +913,9 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
@@ -136,7 +136,7 @@ index c214b842..b98b04a7 100644
  		 * If a CameraStream with the same size and format as the
  		 * current stream has already been requested, associate the two.
 diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
-index 81c988be..1241aea7 100644
+index 3fd8542e..bb9ff572 100644
 --- a/src/android/yuv/post_processor_yuv.cpp
 +++ b/src/android/yuv/post_processor_yuv.cpp
 @@ -67,13 +67,6 @@ int PostProcessorYuv::configure(const StreamConfiguration &inCfg,

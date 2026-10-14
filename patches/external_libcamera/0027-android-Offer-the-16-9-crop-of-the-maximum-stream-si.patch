@@ -1,7 +1,7 @@
-From 38f8e147e5b8665de511999670091626b420ed43 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 10 Oct 2026 11:47:30 +0200
-Subject: [PATCH 33/35] android: Offer the 16:9 crop of the maximum stream size
+Subject: [PATCH] android: Offer the 16:9 crop of the maximum stream size
 
 With the stream size capped to a 4:3 binned mode, the largest 16:9 size
 offered for YUV and implementation-defined streams was 1280x720, and

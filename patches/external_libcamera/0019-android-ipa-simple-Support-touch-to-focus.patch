@@ -1,7 +1,7 @@
-From 1a8687ad8e526f12775778b2e25fa1dfaf0e593e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 15:39:19 +0200
-Subject: [PATCH 23/31] android, ipa: simple: Support touch to focus
+Subject: [PATCH] android, ipa: simple: Support touch to focus
 
 Android sends an AF region and an AF trigger when the user touches the
 preview, but only to a camera that reports AF modes, one AF region and
@@ -28,12 +28,12 @@ Assisted-by: LLM
  src/android/camera_device.h                   |  17 +++
  src/android/camera_request.h                  |   6 +
  src/ipa/simple/algorithms/af.cpp              | 125 +++++++++++++++-
- src/ipa/simple/algorithms/af.h                |  23 +++
+ src/ipa/simple/algorithms/af.h                |  30 ++++
  src/ipa/simple/soft_simple.cpp                |  12 ++
  src/libcamera/software_isp/debayer_cpu.cpp    |   1 +
  src/libcamera/software_isp/swstats_cpu.cpp    |  37 ++++-
  src/libcamera/software_isp/swstats_cpu.h      |   2 +
- 12 files changed, 383 insertions(+), 13 deletions(-)
+ 12 files changed, 390 insertions(+), 13 deletions(-)
 
 diff --git a/include/libcamera/internal/software_isp/debayer_params.h b/include/libcamera/internal/software_isp/debayer_params.h
 index 217cd5d9..b2cb2448 100644
@@ -381,7 +381,7 @@ index fb64f27b..3fdeefd8 100644
  	LIBCAMERA_DISABLE_COPY(Camera3RequestDescriptor)
  };
 diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
-index 930b7347..d6f066d7 100644
+index 43143275..f8c20ae9 100644
 --- a/src/ipa/simple/algorithms/af.cpp
 +++ b/src/ipa/simple/algorithms/af.cpp
 @@ -17,6 +17,8 @@
@@ -400,9 +400,9 @@ index 930b7347..d6f066d7 100644
 +/* The central ninth of the frame, in 1/65535 units */
 +static constexpr std::array<uint16_t, 4> kDefaultWindow = { 21845, 21845, 21845, 21845 };
  
- int Af::configure(IPAContext &context,
- 		  [[maybe_unused]] const IPAConfigInfo &configInfo)
-@@ -69,6 +73,13 @@ int Af::configure(IPAContext &context,
+ int Af::init([[maybe_unused]] IPAContext &context, const YamlObject &tuningData)
+ {
+@@ -83,6 +87,13 @@ int Af::configure(IPAContext &context,
  
  	context.activeState.af.changed = false;
  
@@ -416,7 +416,7 @@ index 930b7347..d6f066d7 100644
  	if (context.configuration.af.enabled)
  		LOG(IPASoftAf, Debug)
  			<< "Lens range " << context.configuration.af.min
-@@ -132,6 +143,7 @@ void Af::sweep(IPAContext &context, double sharpness)
+@@ -146,6 +157,7 @@ void Af::sweep(IPAContext &context, double sharpness)
  			<< "), parking mid-range";
  		bestPosition_ = (af.min + af.max) / 2;
  		finish(context);
@@ -424,7 +424,7 @@ index 930b7347..d6f066d7 100644
  		return;
  	}
  
-@@ -208,6 +220,7 @@ void Af::climb(IPAContext &context, double sharpness)
+@@ -222,6 +234,7 @@ void Af::climb(IPAContext &context, double sharpness)
  void Af::finish(IPAContext &context)
  {
  	state_ = State::Focused;
@@ -432,7 +432,7 @@ index 930b7347..d6f066d7 100644
  	reference_ = best_;
  	last_ = best_;
  	changed_ = 0;
-@@ -250,11 +263,82 @@ void Af::watch(IPAContext &context, double sharpness, double brightness)
+@@ -264,11 +277,82 @@ void Af::watch(IPAContext &context, double sharpness, double brightness)
  	}
  }
  
@@ -516,7 +516,7 @@ index 930b7347..d6f066d7 100644
  {
  	if (!context.configuration.af.enabled)
  		return;
-@@ -267,6 +351,41 @@ void Af::process(IPAContext &context,
+@@ -281,6 +365,41 @@ void Af::process(IPAContext &context,
  					 : 0.0)
  		<< " base " << stats->sharpnessBase;
  
@@ -558,7 +558,7 @@ index 930b7347..d6f066d7 100644
  	if (settle_) {
  		settle_--;
  		return;
-@@ -302,7 +421,9 @@ void Af::process(IPAContext &context,
+@@ -316,7 +435,9 @@ void Af::process(IPAContext &context,
  			reference_ = sharpness;
  			last_ = sharpness;
  		}
@@ -570,7 +570,7 @@ index 930b7347..d6f066d7 100644
  	}
  }
 diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
-index dcef87c8..967448e8 100644
+index 40c3c56a..180b2705 100644
 --- a/src/ipa/simple/algorithms/af.h
 +++ b/src/ipa/simple/algorithms/af.h
 @@ -5,6 +5,11 @@
@@ -585,8 +585,8 @@ index dcef87c8..967448e8 100644
  #include "algorithm.h"
  
  namespace libcamera {
-@@ -19,6 +24,12 @@ public:
- 
+@@ -20,6 +25,12 @@ public:
+ 	int init(IPAContext &context, const YamlObject &tuningData) override;
  	int configure(IPAContext &context,
  		      const IPAConfigInfo &configInfo) override;
 +	void queueRequest(IPAContext &context, const uint32_t frame,
@@ -598,7 +598,7 @@ index dcef87c8..967448e8 100644
  	void process(IPAContext &context, const uint32_t frame,
  		     IPAFrameContext &frameContext,
  		     const SwIspStats *stats,
-@@ -41,6 +52,8 @@ private:
+@@ -42,6 +53,8 @@ private:
  	void climb(IPAContext &context, double sharpness);
  	void finish(IPAContext &context);
  	void watch(IPAContext &context, double sharpness, double brightness);
@@ -607,7 +607,7 @@ index dcef87c8..967448e8 100644
  
  	State state_;
  	unsigned int settle_;
-@@ -61,6 +74,16 @@ private:
+@@ -62,6 +75,23 @@ private:
  	double lastBrightness_;
  	unsigned int changed_;
  	unsigned int steady_;
@@ -621,6 +621,13 @@ index dcef87c8..967448e8 100644
 +	bool locked_;
 +	/* The last coarse sweep saw no peak. */
 +	bool failed_;
++
++	/*
++	 * From the tuning file: the useful lens range, from the module's
++	 * calibration (infinity and macro positions), with a margin.
++	 */
++	int32_t lensMin_ = -1;
++	int32_t lensMax_ = -1;
  };
  
  } /* namespace ipa::soft::algorithms */

@@ -1,7 +1,7 @@
-From a662908d4ed4269a8867a005e5be7e1cd122f2e8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 16:48:48 +0200
-Subject: [PATCH 02/31] android: Support the software ISP as an Android camera
+Subject: [PATCH] android: Support the software ISP as an Android camera
 
 Make a camera that relies on the software ISP, such as those of the
 Samsung Galaxy Tab A 10.1 (2016, Exynos 7870), usable through the
@@ -23,6 +23,9 @@ HAL:
   applies the rotation itself.
 - Size the internal buffers by the bytes per pixel of the format
   written to them.
+- When a derived stream is larger than its crop of the source, convert
+  the crop to NV12 first and scale the NV12 image, which moves fewer
+  bytes than scaling the XRGB8888 one.
 - Add debug properties for the log levels and the number of debayering
   threads.
 - In the AIDL session, free the output release fence instead of
@@ -49,13 +52,13 @@ Assisted-by: LLM
  src/android/jpeg/thumbnailer.cpp              |  21 +++
  src/android/jpeg/thumbnailer.h                |   1 +
  src/android/mm/generic_camera_buffer.cpp      |  18 ++-
- src/android/yuv/post_processor_yuv.cpp        |  44 ++++++
+ src/android/yuv/post_processor_yuv.cpp        |  67 ++++++++
  src/android/yuv/post_processor_yuv.h          |   3 +
  src/libcamera/dma_buf_allocator.cpp           |   8 +-
  .../sensor/camera_sensor_properties.cpp       |  24 +++
  src/libcamera/software_isp/debayer_cpu.cpp    | 149 +++++++++++++++++-
  src/libcamera/software_isp/debayer_cpu.h      |   9 ++
- 16 files changed, 443 insertions(+), 19 deletions(-)
+ 16 files changed, 466 insertions(+), 19 deletions(-)
 
 diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
 index 67bc46e9..9b6b82b6 100644
@@ -527,7 +530,7 @@ index 072d1182..7795ac90 100644
  }
  
 diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
-index 97e18a65..d1be1a9a 100644
+index 97e18a65..27cc9b08 100644
 --- a/src/android/yuv/post_processor_yuv.cpp
 +++ b/src/android/yuv/post_processor_yuv.cpp
 @@ -10,7 +10,9 @@
@@ -549,7 +552,7 @@ index 97e18a65..d1be1a9a 100644
  };
  
  } /* namespace */
-@@ -117,6 +121,46 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
+@@ -117,6 +121,69 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
  					 destinationSize_.width,
  					 destinationSize_.height);
  		break;
@@ -575,6 +578,29 @@ index 97e18a65..d1be1a9a 100644
 +
 +			const uint8_t *crop = src + ((sh - ch) / 2) * srcStride +
 +					      ((sw - cw) / 2) * 4;
++
++			/* Scaling up: convert first, then scale the smaller NV12. */
++			if (static_cast<uint64_t>(cw) * ch < static_cast<uint64_t>(dw) * dh) {
++				const size_t lumaSize = static_cast<size_t>(cw) * ch;
++				scaled_.resize(lumaSize * 3 / 2);
++				ret = libyuv::ARGBToNV12(crop, srcStride,
++							 scaled_.data(), cw,
++							 scaled_.data() + lumaSize, cw,
++							 cw, ch);
++				if (ret)
++					break;
++				ret = libyuv::NV12Scale(scaled_.data(), cw,
++							scaled_.data() + lumaSize, cw,
++							cw, ch,
++							destination->plane(0).data(),
++							destination->stride(0),
++							destination->plane(1).data(),
++							destination->stride(1),
++							dw, dh,
++							libyuv::FilterMode::kFilterBilinear);
++				break;
++			}
++
 +			scaled_.resize(static_cast<size_t>(dw) * dh * 4);
 +			ret = libyuv::ARGBScale(crop, srcStride, cw, ch,
 +						scaled_.data(), dw * 4, dw, dh,

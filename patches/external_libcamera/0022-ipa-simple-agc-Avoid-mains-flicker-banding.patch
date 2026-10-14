@@ -1,7 +1,7 @@
-From a042184e3976f76625f582856d14b3ed365e6dc8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 18:15:01 +0200
-Subject: [PATCH 28/31] ipa: simple: agc: Avoid mains flicker banding
+Subject: [PATCH] ipa: simple: agc: Avoid mains flicker banding
 
 Lamps on 50 Hz mains flicker at 100 Hz, and with an exposure time that
 is not a multiple of 10 ms the flicker shows as bands rolling through
@@ -20,7 +20,7 @@ Assisted-by: LLM
  2 files changed, 48 insertions(+), 17 deletions(-)
 
 diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
-index cad3799f..85ebc313 100644
+index 3f1b64d5..9a835517 100644
 --- a/src/ipa/simple/algorithms/agc.cpp
 +++ b/src/ipa/simple/algorithms/agc.cpp
 @@ -20,6 +20,8 @@ namespace libcamera {
@@ -102,7 +102,7 @@ index cad3799f..85ebc313 100644
 +	int32_t lines;
 +	split(context, total, lines, gain);
 +	if (lines * gain < total * 0.99)
- 		LOG(IPASoftExposure, Info)
+ 		LOG(IPASoftExposure, Debug)
  			<< "Mode " << agc.bin << "x underexposed by "
 -			<< time / (lines * cfg.lineDuration);
 +			<< total / (lines * gain);

@@ -1,8 +1,7 @@
-From 4729d70bbbd7186a87ee8e403b2250d031c16d8e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 18:06:34 +0200
-Subject: [PATCH 08/31] libcamera: software_isp: Drive the focus lens from the
- IPA
+Subject: [PATCH] libcamera: software_isp: Drive the focus lens from the IPA
 
 Pass the lens controls to the soft IPA and apply the lens positions it
 emits. The lens is opened on the first move, once the sensor streams,
