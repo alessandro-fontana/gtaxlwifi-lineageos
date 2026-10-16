@@ -1,6 +1,6 @@
-# LineageOS 23.2 for the Galaxy Tab A 10.1 (2016) Wi-Fi (SM-T580)
+# LineageOS 24.0 for the Galaxy Tab A 10.1 (2016) Wi-Fi (SM-T580)
 
-An unofficial LineageOS 23.2 port for the Samsung SM-T580 (`gtaxlwifi`,
+An unofficial LineageOS 24.0 port for the Samsung SM-T580 (`gtaxlwifi`,
 Exynos 7870), on a mainline Linux kernel (7.2) with a series of patches
 for this board.
 
@@ -15,11 +15,13 @@ for this board.
 | repository | what |
 |---|---|
 | [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
-| [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.2.9 and this board's commits |
+| [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.2.11 and this board's commits |
+| [android_external_gtaxl-loader](https://github.com/alessandro-fontana/android_external_gtaxl-loader) | the loader S-BOOT starts, which starts Linux |
 | this repository | changes to other projects (`patches/`), release tools (`tools/`), instructions, releases |
 
 One branch per LineageOS release, as in LineageOS's own repositories:
-`lineage-23.2` builds with a `lineage-23.2` tree.
+`lineage-24.0` builds with a `lineage-24.0` tree; `lineage-23.2` stays as
+it was.
 
 ## AI assistance
 
@@ -41,6 +43,14 @@ tablet off; file-based encryption; SELinux enforcing; updates through
 LineageOS Recovery.
 
 Not working: the microphone of a wired headset.
+
+## Differences from the stock firmware
+
+- **Partition table**: the Android partitions are made in the space of the
+  factory `SYSTEM` and at the start of `USERDATA`, once, by
+  `gtaxlwifi-repartition.zip` (see INSTALL.md); the Samsung partitions with
+  the EFS and the bootloaders are not touched, and
+  `gtaxlwifi-revert-to-factory.zip` brings the factory table back.
 
 ## Licensing
 

@@ -1,4 +1,4 @@
-# Installing LineageOS 23.2 on the Galaxy Tab A 10.1 (2016) Wi-Fi
+# Installing LineageOS 24.0 on the Galaxy Tab A 10.1 (2016) Wi-Fi
 
 For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
 
@@ -20,15 +20,15 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
   - `gtaxlwifi-boot.img`
   - `gtaxlwifi-recovery.img` (LineageOS Recovery)
   - `gtaxlwifi-repartition.zip` (once, before the first install)
-  - `gtaxlwifi-los23-install.zip`
+  - `gtaxlwifi-los24-install.zip`
   - `gtaxlwifi-revert-to-factory.zip` (only to go back)
   - `gtaxlwifi-odin-AP.tar.md5` (only with Odin: the first two in one file)
 - **samloader-rs**, the tool the LineageOS wiki uses for Samsung devices:
   the zip for your system from
   <https://github.com/topjohnwu/samloader-rs/releases/latest> (tested
   with 2.2.0). Heimdall works too.
-- optional, for the Google apps: **MindTheGapps for Android 16, arm64**
-  (`MindTheGapps-16.0.0-arm64-<date>.zip`), from the link on the LineageOS
+- optional, for the Google apps: **MindTheGapps for Android 17, arm64**
+  (`MindTheGapps-17.0.0-arm64-<date>.zip`), from the link on the LineageOS
   wiki page *Google apps*. Only the packages listed there are supported.
 
 ## Prepare your computer
@@ -112,7 +112,7 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
 6. In the recovery: **Apply update → Apply from ADB**. On the computer:
 
    ```sh
-   adb sideload gtaxlwifi-los23-install.zip
+   adb sideload gtaxlwifi-los24-install.zip
    ```
 
    About five minutes. Ignore the percentage on the computer: it stops
@@ -128,7 +128,7 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
       **Apply update → Apply from ADB**, then on the computer:
 
       ```sh
-      adb sideload MindTheGapps-16.0.0-arm64-<date>.zip
+      adb sideload MindTheGapps-17.0.0-arm64-<date>.zip
       ```
 
    2. The recovery says the package is not signed by this build and asks
@@ -160,13 +160,20 @@ back to Android by itself.
 The Updater app looks for new versions on LineageOS's own server, which
 lists official builds only: this build installs from the zip file.
 
-- **From the zip file**: copy `gtaxlwifi-los23-install.zip` to the tablet
+- **From the zip file**: copy `gtaxlwifi-los24-install.zip` to the tablet
   (for example to Download). Then Settings → System → **Updater** → menu
   **⋮** → **Local update**, choose the zip, **Install**.
 If the tablet was installed before p23 was named `vbmeta`, the update stops
 with `the partition table is not migrated` and nothing is written: install
 `gtaxlwifi-repartition.zip` once (it only renames p23, data is kept), then
 the update.
+
+- **From LineageOS 23.2**: the same, with the 24.0 zip; data is kept. If
+  the Google apps are installed, install them again for the new Android
+  version right after LineageOS and before restarting, as the LineageOS
+  wiki says for upgrades: in the recovery, after `Install completed with
+  status 0.`, **Apply update → Apply from ADB** again and
+  `adb sideload MindTheGapps-17.0.0-arm64-<date>.zip`.
 
 - **With adb**, from the computer:
 
@@ -175,7 +182,7 @@ the update.
   ```
 
   In the recovery: **Apply update → Apply from ADB**, then
-  `adb sideload gtaxlwifi-los23-install.zip`. When the tablet shows
+  `adb sideload gtaxlwifi-los24-install.zip`. When the tablet shows
   `Install completed with status 0.`, **Reboot system now**.
 
 ## Go back to stock or to LineageOS 21
