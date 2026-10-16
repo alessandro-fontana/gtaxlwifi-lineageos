@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 95f8440b7bddde3e46fc595474cc74ed6b34cef6 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sun, 11 Oct 2026 22:04:10 +0200
 Subject: [PATCH 7/8] Add MPEG-4 Part 2 and H.263 encoders
@@ -241,7 +241,7 @@ index 37db55c..6a22c8b 100644
  
      static C2R IntraRefreshPeriodSetter(bool mayBlock,
 diff --git a/v4l2/V4L2ComponentCommon.cpp b/v4l2/V4L2ComponentCommon.cpp
-index 48f7bc4..c3b0f71 100644
+index e4f13cc..a63e92c 100644
 --- a/v4l2/V4L2ComponentCommon.cpp
 +++ b/v4l2/V4L2ComponentCommon.cpp
 @@ -16,6 +16,8 @@ const std::string V4L2ComponentName::kH264Encoder = "c2.v4l2.avc.encoder";
@@ -256,7 +256,7 @@ index 48f7bc4..c3b0f71 100644
 @@ -36,7 +38,8 @@ bool V4L2ComponentName::isValid(const std::string& name) {
             name == kH264Decoder || name == kVP8Decoder || name == kVP9Decoder ||
             name == kHEVCDecoder || name == kAV1Decoder || name == kH264SecureDecoder ||
- 	   name == kVP8SecureDecoder || name == kVP9SecureDecoder || name == kHEVCSecureDecoder ||
+            name == kVP8SecureDecoder || name == kVP9SecureDecoder || name == kHEVCSecureDecoder ||
 -           name == kMPEG4Decoder || name == kH263Decoder;
 +           name == kMPEG4Encoder || name == kH263Encoder || name == kMPEG4Decoder ||
 +           name == kH263Decoder;

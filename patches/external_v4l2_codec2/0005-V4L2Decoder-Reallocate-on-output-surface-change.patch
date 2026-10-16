@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1d012d726c49528457a0a6ab3bc20cd59ea73958 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sun, 27 Sep 2026 13:45:05 +0200
 Subject: [PATCH 5/8] V4L2Decoder: Reallocate on output surface change
@@ -99,7 +99,7 @@ index 6bebc37..0496c6b 100644
      const HalPixelFormat mPixelFormat;
      const C2MemoryUsage mMemoryUsage;
 diff --git a/v4l2/V4L2Decoder.cpp b/v4l2/V4L2Decoder.cpp
-index 09799eb..5b7a780 100644
+index 52b63b1..d566fb0 100644
 --- a/v4l2/V4L2Decoder.cpp
 +++ b/v4l2/V4L2Decoder.cpp
 @@ -586,6 +586,8 @@ void V4L2Decoder::flush() {
@@ -111,7 +111,7 @@ index 09799eb..5b7a780 100644
          tryFetchVideoFrame();
      }
  
-@@ -847,6 +849,14 @@ void V4L2Decoder::onVideoFrameReady(
+@@ -849,6 +851,14 @@ void V4L2Decoder::onVideoFrameReady(
      ALOG_ASSERT(mTaskRunner->RunsTasksInCurrentSequence());
  
      if (!frameWithBlockId) {

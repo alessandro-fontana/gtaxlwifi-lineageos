@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From bbbe969f4c493364576b2c070dabbf1755ec9f53 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 13:06:23 +0200
 Subject: [PATCH 3/8] EncodeComponent: Probe stride with encoder usage

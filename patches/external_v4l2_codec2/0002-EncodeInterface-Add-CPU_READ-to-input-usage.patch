@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From c154d18e563abb34f62cf51b8e273314fcf0c114 Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Sat, 26 Sep 2026 12:50:23 +0200
 Subject: [PATCH 2/8] EncodeInterface: Add CPU_READ to input usage
