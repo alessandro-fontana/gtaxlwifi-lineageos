@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 4915a3fd50bf505c0478f7f3135d659f182a6d7c Mon Sep 17 00:00:00 2001
 From: Alessandro Fontana <alessandro.fontana@pm.me>
 Date: Fri, 25 Sep 2026 16:48:48 +0200
 Subject: [PATCH] android: Support the software ISP as an Android camera
@@ -61,7 +61,7 @@ Assisted-by: LLM
  16 files changed, 466 insertions(+), 19 deletions(-)
 
 diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
-index 67bc46e9..9b6b82b6 100644
+index 67bc46e..9b6b82b 100644
 --- a/src/android/camera_capabilities.cpp
 +++ b/src/android/camera_capabilities.cpp
 @@ -133,6 +133,15 @@ const std::map<int, const Camera3Format> camera3FormatsMap = {
@@ -115,7 +115,7 @@ index 67bc46e9..9b6b82b6 100644
  	return true;
  }
 diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
-index d50cac6b..08dcb8b2 100644
+index d50cac6..08dcb8b 100644
 --- a/src/android/camera_device.cpp
 +++ b/src/android/camera_device.cpp
 @@ -7,6 +7,8 @@
@@ -205,7 +205,7 @@ index d50cac6b..08dcb8b2 100644
  	case CameraConfiguration::Valid:
  		break;
 diff --git a/src/android/camera_stream.cpp b/src/android/camera_stream.cpp
-index f6f2e735..4a985456 100644
+index f6f2e73..4a98545 100644
 --- a/src/android/camera_stream.cpp
 +++ b/src/android/camera_stream.cpp
 @@ -15,6 +15,8 @@
@@ -324,7 +324,7 @@ index f6f2e735..4a985456 100644
  		buffers_.emplace_back(allocatedBuffers_.back().get());
  	}
 diff --git a/src/android/camera_stream.h b/src/android/camera_stream.h
-index 86f4a560..280c34d0 100644
+index 86f4a56..280c34d 100644
 --- a/src/android/camera_stream.h
 +++ b/src/android/camera_stream.h
 @@ -17,6 +17,8 @@
@@ -346,7 +346,7 @@ index 86f4a560..280c34d0 100644
  	std::vector<libcamera::FrameBuffer *> buffers_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
  	/*
 diff --git a/src/android/hal/device/LibcameraDeviceSession.cpp b/src/android/hal/device/LibcameraDeviceSession.cpp
-index a2e7b731..aefdc6fd 100644
+index a2e7b73..aefdc6f 100644
 --- a/src/android/hal/device/LibcameraDeviceSession.cpp
 +++ b/src/android/hal/device/LibcameraDeviceSession.cpp
 @@ -510,8 +510,8 @@ void LibcameraDeviceSession::ResultBatcher::freeReleaseFences(std::vector<Captur
@@ -361,7 +361,7 @@ index a2e7b731..aefdc6fd 100644
          }
      }
 diff --git a/src/android/hal/provider/service.cpp b/src/android/hal/provider/service.cpp
-index 2e71f0f5..00ba2636 100644
+index 2e71f0f..58d97ca 100644
 --- a/src/android/hal/provider/service.cpp
 +++ b/src/android/hal/provider/service.cpp
 @@ -17,6 +17,9 @@
@@ -380,8 +380,8 @@ index 2e71f0f5..00ba2636 100644
  
 +    /*
 +     * Debug knob: vendor.camera.libcamera.log_levels overrides the
-+     * LIBCAMERA_LOG_LEVELS of the .rc (e.g. "HAL:DEBUG,*:WARN"). Read before
-+     * the HAL, hence libcamera, is loaded.
++     * LIBCAMERA_LOG_LEVELS of the .rc (e.g. "*:WARN,HAL:DEBUG": the last
++     * match wins). libcamera reads it at its first log message.
 +     */
 +    char levels[PROP_VALUE_MAX] = {};
 +    if (__system_property_get("vendor.camera.libcamera.log_levels", levels) > 0)
@@ -396,7 +396,7 @@ index 2e71f0f5..00ba2636 100644
  
      std::shared_ptr<LibcameraProvider> provider = ndk::SharedRefBase::make<LibcameraProvider>();
 diff --git a/src/android/jpeg/encoder_libjpeg.cpp b/src/android/jpeg/encoder_libjpeg.cpp
-index cb242b5e..32ad6ce7 100644
+index cb242b5..32ad6ce 100644
 --- a/src/android/jpeg/encoder_libjpeg.cpp
 +++ b/src/android/jpeg/encoder_libjpeg.cpp
 @@ -43,6 +43,7 @@ const std::map<PixelFormat, JPEGPixelFormatInfo> pixelInfo{
@@ -422,7 +422,7 @@ index cb242b5e..32ad6ce7 100644
  	jpeg_set_defaults(&compress_);
  
 diff --git a/src/android/jpeg/thumbnailer.cpp b/src/android/jpeg/thumbnailer.cpp
-index adafc468..6949decd 100644
+index adafc46..6949dec 100644
 --- a/src/android/jpeg/thumbnailer.cpp
 +++ b/src/android/jpeg/thumbnailer.cpp
 @@ -13,6 +13,9 @@
@@ -468,7 +468,7 @@ index adafc468..6949decd 100644
  	ASSERT(tw % 2 == 0 && th % 2 == 0);
  
 diff --git a/src/android/jpeg/thumbnailer.h b/src/android/jpeg/thumbnailer.h
-index 1b836e59..eea73c33 100644
+index 1b836e5..eea73c3 100644
 --- a/src/android/jpeg/thumbnailer.h
 +++ b/src/android/jpeg/thumbnailer.h
 @@ -26,6 +26,7 @@ public:
@@ -480,7 +480,7 @@ index 1b836e59..eea73c33 100644
  
  	bool valid_;
 diff --git a/src/android/mm/generic_camera_buffer.cpp b/src/android/mm/generic_camera_buffer.cpp
-index 072d1182..7795ac90 100644
+index 072d118..7795ac9 100644
 --- a/src/android/mm/generic_camera_buffer.cpp
 +++ b/src/android/mm/generic_camera_buffer.cpp
 @@ -10,6 +10,8 @@
@@ -530,7 +530,7 @@ index 072d1182..7795ac90 100644
  }
  
 diff --git a/src/android/yuv/post_processor_yuv.cpp b/src/android/yuv/post_processor_yuv.cpp
-index 97e18a65..27cc9b08 100644
+index 97e18a6..27cc9b0 100644
 --- a/src/android/yuv/post_processor_yuv.cpp
 +++ b/src/android/yuv/post_processor_yuv.cpp
 @@ -10,7 +10,9 @@
@@ -623,7 +623,7 @@ index 97e18a65..27cc9b08 100644
  		LOG(YUV, Error) << "Unsupported source format " << sourceFormat_;
  		processComplete.emit(streamBuffer, PostProcessor::Status::Error);
 diff --git a/src/android/yuv/post_processor_yuv.h b/src/android/yuv/post_processor_yuv.h
-index 7a7451a8..6e8e5b40 100644
+index 7a7451a..6e8e5b4 100644
 --- a/src/android/yuv/post_processor_yuv.h
 +++ b/src/android/yuv/post_processor_yuv.h
 @@ -7,6 +7,8 @@
@@ -644,7 +644,7 @@ index 7a7451a8..6e8e5b40 100644
  	unsigned int destinationLength_[3] = {};
  	unsigned int sourceStride_[3] = {};
 diff --git a/src/libcamera/dma_buf_allocator.cpp b/src/libcamera/dma_buf_allocator.cpp
-index d8c62dd6..25149008 100644
+index d8c62dd..2514900 100644
 --- a/src/libcamera/dma_buf_allocator.cpp
 +++ b/src/libcamera/dma_buf_allocator.cpp
 @@ -100,7 +100,13 @@ DmaBufAllocator::DmaBufAllocator(DmaBufAllocatorFlags type)
@@ -663,7 +663,7 @@ index d8c62dd6..25149008 100644
  			ret = errno;
  			LOG(DmaBufAllocator, Debug)
 diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
-index f2973417..efb559af 100644
+index f297341..efb559a 100644
 --- a/src/libcamera/sensor/camera_sensor_properties.cpp
 +++ b/src/libcamera/sensor/camera_sensor_properties.cpp
 @@ -162,6 +162,30 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
@@ -698,7 +698,7 @@ index f2973417..efb559af 100644
  			.unitCellSize = { 1120, 1120 },
  			.testPatternModes = {
 diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
-index 66f6038c..af336e9a 100644
+index 66f6038..af336e9 100644
 --- a/src/libcamera/software_isp/debayer_cpu.cpp
 +++ b/src/libcamera/software_isp/debayer_cpu.cpp
 @@ -13,9 +13,12 @@
@@ -882,7 +882,7 @@ index 66f6038c..af336e9a 100644
  	else
  		process4(in.planes()[0].data(), out.planes()[0].data());
 diff --git a/src/libcamera/software_isp/debayer_cpu.h b/src/libcamera/software_isp/debayer_cpu.h
-index 926195e9..2e6fe397 100644
+index 926195e..2e6fe39 100644
 --- a/src/libcamera/software_isp/debayer_cpu.h
 +++ b/src/libcamera/software_isp/debayer_cpu.h
 @@ -133,6 +133,12 @@ private:
