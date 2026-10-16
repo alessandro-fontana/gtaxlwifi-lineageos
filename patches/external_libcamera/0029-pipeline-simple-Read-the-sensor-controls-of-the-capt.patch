@@ -1,0 +1,83 @@
+From 0a30ccd542403695c1a0adc74538a1c032b72a37 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Thu, 15 Oct 2026 17:53:14 +0200
+Subject: [PATCH] pipeline: simple: Read the sensor controls of the captured
+ frame
+
+DelayedControls records the controls at the sequence of the frame start
+events, but the software ISP statistics asked for them with the request
+sequence. Every frame captured with no request queued, or lost, makes
+the request sequence lag behind: once the lag passed the AGC's wait for
+its own values, it never saw them arrive, decided again every few frames
+and the preview flickered.
+
+Keep the sequence of the captured frame with the request and read the
+sensor controls with it.
+
+Assisted-by: LLM
+---
+ src/libcamera/pipeline/simple/simple.cpp | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index a0335c4..a3f2b54 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -184,11 +184,14 @@ class SimplePipelineHandler;
+ 
+ struct SimpleFrameInfo {
+ 	SimpleFrameInfo(uint32_t f, Request *r, bool m)
+-		: frame(f), request(r), metadataRequired(m), metadataProcessed(false)
++		: frame(f), sequence(f), request(r), metadataRequired(m),
++		  metadataProcessed(false)
+ 	{
+ 	}
+ 
+ 	uint32_t frame;
++	/* Sequence of the captured frame, the one the sensor controls use. */
++	uint32_t sequence;
+ 	Request *request;
+ 	bool metadataRequired;
+ 	bool metadataProcessed;
+@@ -950,7 +953,16 @@ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
+ 
+ 		if (converter_)
+ 			converter_->queueBuffers(buffer, conversionQueue_.front().outputs);
+-		else
++		else {
++			/*
++			 * Frames captured with no request queued, or lost, make
++			 * the request sequence lag behind the sensor's: keep the
++			 * one of the frame for its sensor controls.
++			 */
++			SimpleFrameInfo *info = frameInfo_.find(request->sequence());
++			if (info)
++				info->sequence = buffer->metadata().sequence;
++
+ 			/*
+ 			 * request->sequence() cannot be retrieved from `buffer' inside
+ 			 * queueBuffers because unique_ptr's make buffer->request() invalid
+@@ -958,6 +970,7 @@ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
+ 			 */
+ 			swIsp_->queueBuffers(request->sequence(), buffer,
+ 					     conversionQueue_.front().outputs);
++		}
+ 
+ 		conversionQueue_.pop();
+ 		return;
+@@ -1012,8 +1025,11 @@ void SimpleCameraData::conversionOutputDone(FrameBuffer *buffer)
+ 
+ void SimpleCameraData::ispStatsReady(uint32_t frame, uint32_t bufferId)
+ {
++	SimpleFrameInfo *info = frameInfo_.find(frame);
++	uint32_t sequence = info ? info->sequence : frame;
++
+ 	swIsp_->processStats(frame, bufferId,
+-			     delayedCtrls_->get(frame));
++			     delayedCtrls_->get(sequence));
+ }
+ 
+ void SimpleCameraData::metadataReady(uint32_t frame, const ControlList &metadata)
+-- 
+2.47.3
+
