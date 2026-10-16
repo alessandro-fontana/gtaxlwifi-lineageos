@@ -14,7 +14,8 @@
 #   gtaxlwifi-boot.img                BOOT: the loader with kernel, DTB, ramdisk
 #   gtaxlwifi-recovery.img            RECOVERY: the loader with the recovery
 #   gtaxlwifi-repartition.zip         once, before the first install
-#   gtaxlwifi-los23-install.zip       install and update, signed
+#   gtaxlwifi-losNN-install.zip       install and update, signed (NN: the
+#                                     LineageOS major version)
 #   gtaxlwifi-revert-to-factory.zip   back to the factory partition table
 #   gtaxlwifi-odin-AP.tar.md5         both images for Odin's AP slot
 #   SHA256SUMS
@@ -61,6 +62,11 @@ STRAY=$(unzip -Z1 "$TF" | grep -E '^(SYSTEM|SYSTEM_EXT|PRODUCT|VENDOR|ODM)/[^/].
 done)
 [ -z "$STRAY" ] || { echo "$STRAY" >&2; die "files no package declares: m installclean, then m target-files-package otatools"; }
 
+# the install package carries the LineageOS major version in its name
+LOS=$(sed -n 's/^ro.lineage.build.version=\([0-9]*\)\..*/\1/p' "$OUT/product/etc/build.prop")
+[ -n "$LOS" ] || die "no ro.lineage.build.version in $OUT/product/etc/build.prop"
+INSTALL_ZIP=gtaxlwifi-los$LOS-install.zip
+
 rm -rf "$R"; mkdir -p "$R"
 T=$(mktemp -d "${TMPDIR:-/tmp}/gtaxl-release.XXXXXX"); trap 'rm -rf "$T"' EXIT
 
@@ -70,7 +76,7 @@ export PATH=$TOP/out/host/linux-x86/bin:$PATH
 ( cd "$TOP" && sign_target_files_apks -o -d "$KEYS" "$TF" "$T/signed-target_files.zip" ) \
 	> "$R/sign.log" 2>&1 || { tail -20 "$R/sign.log" >&2; die "sign_target_files_apks failed, see $R/sign.log"; }
 ( cd "$TOP" && ota_from_target_files -k "$KEYS/releasekey" --block --backup=true \
-	"$T/signed-target_files.zip" "$R/gtaxlwifi-los23-install.zip" ) \
+	"$T/signed-target_files.zip" "$R/$INSTALL_ZIP" ) \
 	> "$R/ota.log" 2>&1 || { tail -20 "$R/ota.log" >&2; die "ota_from_target_files failed, see $R/ota.log"; }
 unzip -p "$T/signed-target_files.zip" IMAGES/recovery.img > "$R/gtaxlwifi-recovery.img"
 unzip -p "$T/signed-target_files.zip" IMAGES/boot.img > "$R/gtaxlwifi-boot.img"
@@ -89,7 +95,7 @@ cp "$R/gtaxlwifi-recovery.img" "$T/recovery.img"
 mv "$T/gtaxlwifi-odin-AP.tar" "$R/gtaxlwifi-odin-AP.tar.md5"
 
 ( cd "$R" && sha256sum gtaxlwifi-boot.img gtaxlwifi-recovery.img gtaxlwifi-repartition.zip \
-	gtaxlwifi-los23-install.zip gtaxlwifi-revert-to-factory.zip gtaxlwifi-odin-AP.tar.md5 > SHA256SUMS )
+	"$INSTALL_ZIP" gtaxlwifi-revert-to-factory.zip gtaxlwifi-odin-AP.tar.md5 > SHA256SUMS )
 echo
 grep -m1 '^ro.lineage.version=' "$OUT/product/etc/build.prop" || true
 ls -l "$R"

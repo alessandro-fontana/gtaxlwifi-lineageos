@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Converts the factory partition table of the SM-T580 to the layout
-# LineageOS 23.2 installs on, once, before the first install. Runs in
+# LineageOS installs on, once, before the first install. Runs in
 # LineageOS Recovery (no awk there).
 #
 # SYSTEM (p19) becomes super; vbmeta, metadata and misc are added as p23-p25
