@@ -1,4 +1,4 @@
-# Build LineageOS 23.2 for the Galaxy Tab A 10.1 (2016) Wi-Fi (SM-T580)
+# Build LineageOS 24.0 for the Galaxy Tab A 10.1 (2016) Wi-Fi (SM-T580)
 
 How to build the files [`INSTALL.md`](INSTALL.md) installs: the boot image,
 the recovery, the install package and the two packages that convert the
@@ -10,12 +10,14 @@ The sources are in three repositories:
 |---|---|
 | [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
 | [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.2.9 and this board's commits |
+| [android_external_gtaxl-loader](https://github.com/alessandro-fontana/android_external_gtaxl-loader) | the loader S-BOOT starts, in front of the kernel |
 | this repository | changes to other projects, release tools, instructions |
 
 ## What you need
 
-- a 64-bit Linux computer with **32 GB of RAM** (16 GB with a large swap
-  works, slowly) and **300 GB free** on a fast disk;
+- a 64-bit Linux computer with **32 GB of RAM** and more swap than
+  usual: the analysis step of the build alone takes more than 42 GB of RAM
+  and swap together; and **300 GB free** on a fast disk;
 - Debian 13 or Ubuntu 24.04 (others work with the equivalent packages):
 
   ```sh
@@ -48,14 +50,15 @@ export REPO=~/gtaxlwifi-lineageos TOP=~/lineage
 
 ```sh
 mkdir -p $TOP && cd $TOP
-repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs
+repo init -u https://github.com/LineageOS/android.git -b lineage-24.0 --git-lfs
 mkdir -p .repo/local_manifests
 cp $REPO/local_manifests/gtaxlwifi.xml .repo/local_manifests/
 repo sync -c --no-clone-bundle -j8
 ```
 
-The local manifest adds the device tree, the kernel, `device/mainline/common`
-and the projects it needs, and LibCamera's Android branch by TI.
+The local manifest adds the device tree, the kernel, the loader,
+`device/mainline/common` and the projects it needs, and LibCamera's Android
+branch by TI.
 
 ## 2. Changes to other projects
 
@@ -67,22 +70,18 @@ P=$REPO/patches
 while read dir series; do
   git -C $TOP/$dir am -q $P/$series/*.patch || echo "FAILED: $series"
 done << 'END'
-system/core                        system_core
 frameworks/base                    frameworks_base
+hardware/interfaces                hardware_interfaces
 external/minigbm-upstream          external_minigbm-upstream
-hardware/intel/sensors-iio         hardware_intel_sensors-iio
 hardware/linaro/libpm              hardware_linaro_libpm
 external/v4l2_codec2               external_v4l2_codec2
 external/tinyhal                   external_tinyhal
 external/libcamera                 external_libcamera
 END
-git -C $TOP/system/sepolicy apply $P/backports/system_sepolicy.patch
-git -C $TOP/external/selinux apply $P/backports/external_selinux.patch
 ```
 
-Nothing may print `FAILED`. The two backports bring the `memfd_file`
-class from Android 17 and are not meant for submission. A `repo sync`
-undoes all of this: apply it again afterwards.
+Nothing may print `FAILED`. A `repo sync` undoes all of this: apply it
+again afterwards.
 
 ## 3. Proprietary files
 
@@ -133,7 +132,7 @@ Press Enter at the password prompts (no password). LineageOS includes
 ```sh
 cd $TOP
 source build/envsetup.sh
-lunch lineage_gtaxlwifi-bp4a-userdebug
+lunch lineage_gtaxlwifi-cp2a-userdebug
 m target-files-package otatools
 $REPO/tools/build-release.sh ~/gtaxlwifi-release
 ```
@@ -147,7 +146,7 @@ The first build takes hours. `build-release.sh` signs the target files
 | `gtaxlwifi-boot.img` | the boot image, for `BOOT` |
 | `gtaxlwifi-recovery.img` | LineageOS Recovery, for `RECOVERY` |
 | `gtaxlwifi-repartition.zip` | converts the factory partition table, once |
-| `gtaxlwifi-los23-install.zip` | install and update |
+| `gtaxlwifi-los24-install.zip` | install and update |
 | `gtaxlwifi-revert-to-factory.zip` | back to the factory partition table |
 | `gtaxlwifi-odin-AP.tar.md5` | boot image and recovery in one file, for Odin |
 | `SHA256SUMS` | checksums |

@@ -2,36 +2,42 @@
 <manifest>
   <!-- This device -->
   <project path="device/samsung/gtaxlwifi" name="alessandro-fontana/android_device_samsung_gtaxlwifi"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="kernel/mainline/exynos7870-mainline" name="alessandro-fontana/linux-exynos7870"
            remote="github" revision="gtaxlwifi/7.2" clone-depth="1" />
+  <project path="external/gtaxl-loader" name="alessandro-fontana/android_external_gtaxl-loader"
+           remote="github" revision="lineage-24.0" />
 
   <!-- Mainline device dependencies (also in the device tree's lineage.dependencies) -->
   <project path="device/mainline/common" name="LineageOS/android_device_mainline_common"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="hardware/mainline/common" name="LineageOS/android_hardware_mainline_common"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="kernel/mainline/configs" name="LineageOS/android_kernel_mainline_configs"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="external/minigbm-upstream" name="LineageOS/android_external_minigbm-upstream"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="external/drm_hwcomposer-upstream" name="LineageOS/android_external_drm_hwcomposer-upstream"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="external/mesa" name="LineageOS/android_external_mesa"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="external/linux-firmware-mainline" name="LineageOS/android_external_linux-firmware-mainline"
-           remote="github" revision="lineage-23.2" />
-  <project path="hardware/intel/sensors-iio" name="LineageOS/android_hardware_intel_sensors-iio"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <!-- The thermal HAL option of device/mainline/common -->
   <project path="hardware/linaro/libpm" name="LineageOS/android_hardware_linaro_libpm"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
+  <project path="vendor/mainline" name="LineageOS/android_vendor_mainline"
+           remote="github" revision="lineage-24.0" />
+  <project path="external/alsa-lib" name="LineageOS/android_external_alsa-lib"
+           remote="github" revision="lineage-24.0" />
+  <project path="external/alsa-ucm-conf" name="LineageOS/android_external_alsa-ucm-conf"
+           remote="github" revision="lineage-24.0" />
   <project path="external/tinyhal" name="LineageOS/android_external_tinyhal"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="external/libdisplay-info-upstream" name="LineageOS/android_external_libdisplay-info-upstream"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <project path="prebuilts/mesa-build-dep" name="LineageOS/android_prebuilts_mesa-build-dep"
-           remote="github" revision="lineage-23.2" />
+           remote="github" revision="lineage-24.0" />
   <!-- TI's libcamera, with the software ISP the AOSP one lacks, as
        device/mainline/common/optional/camera-provider-hal_libcamera expects. -->
   <remote name="ti" fetch="https://git.ti.com/git/android/" />
