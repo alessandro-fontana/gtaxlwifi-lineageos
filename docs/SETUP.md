@@ -9,7 +9,7 @@ The sources are in three repositories:
 | repository | what |
 |---|---|
 | [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
-| [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.2.9 and this board's commits |
+| [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.3 and this board's commits |
 | [android_external_gtaxl-loader](https://github.com/alessandro-fontana/android_external_gtaxl-loader) | the loader S-BOOT starts, in front of the kernel |
 | this repository | changes to other projects, release tools, instructions |
 

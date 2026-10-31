@@ -4,7 +4,7 @@
   <project path="device/samsung/gtaxlwifi" name="alessandro-fontana/android_device_samsung_gtaxlwifi"
            remote="github" revision="lineage-24.0" />
   <project path="kernel/mainline/exynos7870-mainline" name="alessandro-fontana/linux-exynos7870"
-           remote="github" revision="gtaxlwifi/7.2" clone-depth="1" />
+           remote="github" revision="gtaxlwifi/7.3" clone-depth="1" />
   <project path="external/gtaxl-loader" name="alessandro-fontana/android_external_gtaxl-loader"
            remote="github" revision="lineage-24.0" />
 
