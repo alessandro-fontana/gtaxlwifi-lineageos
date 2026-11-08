@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 6 Nov 2026 13:39:43 +0100
+Subject: [PATCH 6/6] minigbm-upstream: gbm_mesa: Free each import
+
+drv calls bo_destroy only for the last bo of a dma-buf, but every import
+has its own GbmMesaBoPriv with its own fds. An import destroyed while
+another one of the same buffer was alive leaked them, and the fds kept
+the buffer allocated: 2 fds per frame of hardware-decoded video through
+AIDL Codec2, and a full-screen buffer in the composer per closed window.
+
+Free the private data in bo_release, which drv calls for every bo.
+Mappings are shared per dma-buf and can outlive the import they were made
+through, so each one holds a reference to it and unmaps through it.
+
+Reported-by: Matt Sullivan <1115325+matt-sullivan@users.noreply.github.com>
+Assisted-by: LLM
+Change-Id: Ia48b1b4a66e96e7b16f656c0f69e04299f00e7d8
+---
+ gbm_mesa_driver/gbm_mesa_driver.cpp    |  1 +
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 59 +++++++++++++++++++++-----
+ gbm_mesa_driver/gbm_mesa_internals.h   |  2 +
+ 3 files changed, 52 insertions(+), 10 deletions(-)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_driver.cpp b/gbm_mesa_driver/gbm_mesa_driver.cpp
+index 2865343..ee03177 100644
+--- a/gbm_mesa_driver/gbm_mesa_driver.cpp
++++ b/gbm_mesa_driver/gbm_mesa_driver.cpp
+@@ -29,6 +29,7 @@ struct backend backend_gbm_mesa = {
+ 	.init = gbm_mesa_driver_init,
+ 	.close = gbm_mesa_driver_close,
+ 	.bo_create = gbm_mesa_bo_create,
++	.bo_release = gbm_mesa_bo_release,
+ 	.bo_destroy = gbm_mesa_bo_destroy,
+ 	.bo_import = gbm_mesa_bo_import,
+ 	.bo_map = gbm_mesa_bo_map,
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 59b9abb..58a9e5b 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -31,6 +31,7 @@ extern "C" {
+ #include "util.h"
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <assert.h>
+ #include <cutils/properties.h>
+ #include <dlfcn.h>
+@@ -344,8 +345,28 @@ struct GbmMesaBoPriv {
+ 	struct gbm_bo *gbm_bo = nullptr;
+ 	/* Allocated from the system dma-heap, see gbm_mesa_use_heap() */
+ 	bool heap = false;
++	/* One for the bo, one for each mapping made through it. */
++	std::atomic<int> refs{1};
+ };
+ 
++/* drv shares a mapping between the imports of a buffer: it outlives its bo. */
++struct GbmMesaMapping {
++	GbmMesaBoPriv *priv;
++	void *map_data;
++};
++
++static void gbm_mesa_priv_unref(GbmMesaBoPriv *priv)
++{
++	if (priv->refs.fetch_sub(1) == 1)
++		delete priv;
++}
++
++static void gbm_mesa_mapping_init(struct vma *vma, GbmMesaBoPriv *priv, void *map_data)
++{
++	priv->refs++;
++	vma->priv = new GbmMesaMapping{ priv, map_data };
++}
++
+ /*
+  * On a SoC without cache-coherent GPU buffers, buffers allocated by the GPU
+  * driver are mapped write-combined and CPU reads from them are very slow.
+@@ -609,15 +630,24 @@ int gbm_mesa_bo_import(struct bo *bo, struct drv_import_fd_data *data)
+ 	return 0;
+ }
+ 
+-int gbm_mesa_bo_destroy(struct bo *bo)
++/*
++ * drv calls bo_destroy only for the last bo of a dma-buf, but every bo has its
++ * own GbmMesaBoPriv and fds, so they go here, where it calls for each of them.
++ */
++int gbm_mesa_bo_release(struct bo *bo)
+ {
+ 	if (bo->priv) {
+-		delete (GbmMesaBoPriv *)(bo->priv);
++		gbm_mesa_priv_unref((GbmMesaBoPriv *)bo->priv);
+ 		bo->priv = nullptr;
+ 	}
+ 	return 0;
+ }
+ 
++int gbm_mesa_bo_destroy(struct bo *bo)
++{
++	return 0;
++}
++
+ int gbm_mesa_bo_get_plane_fd(struct bo *bo, size_t plane)
+ {
+ 	return dup(((GbmMesaBoPriv *)bo->priv)->fds[plane].Get());
+@@ -635,7 +665,8 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ 	if (priv->heap) {
+ 		void *addr = mmap(nullptr, vma->length, PROT_READ | PROT_WRITE, MAP_SHARED,
+ 				  priv->fds[0].Get(), 0);
+-		vma->priv = nullptr;
++		if (addr != MAP_FAILED)
++			gbm_mesa_mapping_init(vma, priv, nullptr);
+ 		return addr;
+ 	}
+ 
+@@ -661,7 +692,10 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ 	if (priv->gbm_bo == nullptr)
+ 		return MAP_FAILED;
+ 
+-	wr->map(priv->gbm_bo, s_width, s_height, &buf, &vma->priv);
++	void *map_data = nullptr;
++	wr->map(priv->gbm_bo, s_width, s_height, &buf, &map_data);
++	if (buf != MAP_FAILED)
++		gbm_mesa_mapping_init(vma, priv, map_data);
+ 
+ 	return buf;
+ }
+@@ -671,19 +705,24 @@ int gbm_mesa_bo_unmap(struct bo *bo, struct vma *vma)
+ 	auto drv = gbm_mesa_get_or_init_driver(bo->drv, true);
+ 	auto wr = drv->wrapper;
+ 
+-	auto priv = (GbmMesaBoPriv *)bo->priv;
++	auto mapping = (GbmMesaMapping *)vma->priv;
++	auto priv = mapping->priv;
++	int ret = 0;
+ 
+ 	if (priv->heap) {
+ 		/* End of the CPU access begun in gbm_mesa_bo_invalidate(). */
+ 		gbm_mesa_heap_sync(priv->fds[0].Get(), DMA_BUF_SYNC_END);
+-		return munmap(vma->addr, vma->length);
++		ret = munmap(vma->addr, vma->length);
++	} else {
++		assert(priv->gbm_bo != nullptr);
++		assert(mapping->map_data != nullptr);
++		wr->unmap(priv->gbm_bo, mapping->map_data);
+ 	}
+ 
+-	assert(priv->gbm_bo != nullptr);
+-	assert(vma->priv != nullptr);
+-	wr->unmap(priv->gbm_bo, vma->priv);
++	gbm_mesa_priv_unref(priv);
++	delete mapping;
+ 	vma->priv = nullptr;
+-	return 0;
++	return ret;
+ }
+ 
+ /* Called on every lock: the GPU may have written the buffer since the last one. */
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.h b/gbm_mesa_driver/gbm_mesa_internals.h
+index 906495e..5a7bfc1 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.h
++++ b/gbm_mesa_driver/gbm_mesa_internals.h
+@@ -43,6 +43,8 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 
+ int gbm_mesa_bo_import(struct bo *bo, struct drv_import_fd_data *data);
+ 
++int gbm_mesa_bo_release(struct bo *bo);
++
+ int gbm_mesa_bo_destroy(struct bo *bo);
+ 
+ int gbm_mesa_bo_invalidate(struct bo *bo, struct mapping *mapping);
+-- 
+2.47.3
+
