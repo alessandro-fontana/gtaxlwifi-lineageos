@@ -4,13 +4,14 @@ How to build the files [`INSTALL.md`](INSTALL.md) installs: the boot image,
 the recovery, the install package and the two packages that convert the
 partition table and go back to the factory one.
 
-The sources are in three repositories:
+The sources are in these repositories:
 
 | repository | what |
 |---|---|
 | [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
 | [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.3 and this board's commits |
 | [android_external_gtaxl-loader](https://github.com/alessandro-fontana/android_external_gtaxl-loader) | the loader S-BOOT starts, in front of the kernel |
+| [android_external_libcamera](https://github.com/alessandro-fontana/android_external_libcamera) | the cameras: TI's libcamera for Android and this device's commits |
 | this repository | changes to other projects, release tools, instructions |
 
 ## What you need
