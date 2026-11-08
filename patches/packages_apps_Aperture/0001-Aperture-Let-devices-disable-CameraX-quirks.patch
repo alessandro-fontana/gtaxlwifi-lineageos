@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Fri, 6 Nov 2026 16:59:54 +0100
+Subject: [PATCH 1/1] Aperture: Let devices disable CameraX quirks
+
+CameraX applies its quirks by device model, whatever the camera HAL. A
+device that runs another HAL than the one a quirk describes gets the
+workaround anyway: ExtraCroppingQuirk forces 16:9 streams on some Samsung
+models, even with 4:3 selected. Add a config_disabledCameraXQuirks array,
+empty by default, for devices to overlay, and keep the quirk class names.
+
+Assisted-by: LLM
+Change-Id: Ia8189afee5e1e6c36e9b45c7e7cf2cd06dea4e6b
+---
+ app/proguard-rules.pro             | 3 +++
+ app/src/main/AndroidManifest.xml   | 9 +++++++++
+ app/src/main/res/values/config.xml | 7 +++++++
+ 3 files changed, 19 insertions(+)
+
+diff --git a/app/proguard-rules.pro b/app/proguard-rules.pro
+index 286257f..90283e4 100644
+--- a/app/proguard-rules.pro
++++ b/app/proguard-rules.pro
+@@ -26,5 +26,8 @@
+ # Any class extending SettingsFragment can be referenced in XML.
+ -keep class ** extends org.lineageos.aperture.SettingsActivity$SettingsFragment
+ 
++# CameraX quirks are disabled by class name, see config_disabledCameraXQuirks.
++-keepnames class * implements androidx.camera.core.impl.Quirk
++
+ # Suppress warnings for the dynamically loaded camera extensions library
+ -dontwarn androidx.camera.extensions.impl.advanced.**
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 639a85e..79114e1 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -46,6 +46,15 @@
+             android:name="androidx.camera.extensions.impl"
+             android:required="false" />
+ 
++        <service
++            android:name="androidx.camera.core.impl.QuirkSettingsLoader$MetadataHolderService"
++            android:enabled="false"
++            android:exported="false">
++            <meta-data
++                android:name="androidx.camera.core.quirks.FORCE_DISABLED"
++                android:resource="@array/config_disabledCameraXQuirks" />
++        </service>
++
+         <activity
+             android:name=".CameraActivity"
+             android:clearTaskOnLaunch="true"
+diff --git a/app/src/main/res/values/config.xml b/app/src/main/res/values/config.xml
+index 1920aa1..b716d02 100644
+--- a/app/src/main/res/values/config.xml
++++ b/app/src/main/res/values/config.xml
+@@ -4,6 +4,13 @@
+      SPDX-License-Identifier: Apache-2.0
+ -->
+ <resources>
++    <!-- CameraX quirks to disable on this device, as fully-qualified class
++         names. CameraX applies them by device model: a device whose camera
++         HAL is not the one a quirk describes can turn it off here. -->
++    <string-array name="config_disabledCameraXQuirks">
++        <!-- No quirk is disabled by default. -->
++    </string-array>
++
+     <!-- Enable auxiliary cameras selector. -->
+     <bool name="config_enableAuxCameras">false</bool>
+ 
+-- 
+2.47.3
+
