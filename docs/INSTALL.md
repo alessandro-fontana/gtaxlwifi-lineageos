@@ -107,7 +107,10 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
    ```
 
    It takes a few seconds and ends with **`Done!`** on the tablet; go on
-   with the next step, no reboot needed. If the table was already converted,
+   with the next step, no reboot needed. Coming from stock, the recovery
+   first prints an error about `/dev/block/by-name/super` and `Could not
+   read partition table`: that is expected, this zip is what creates
+   `super`. If the table was already converted,
    the zip says so and changes nothing.
 6. In the recovery: **Apply update → Apply from ADB**. On the computer:
 
