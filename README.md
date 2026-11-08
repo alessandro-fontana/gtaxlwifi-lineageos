@@ -17,6 +17,7 @@ for this board.
 | [android_device_samsung_gtaxlwifi](https://github.com/alessandro-fontana/android_device_samsung_gtaxlwifi) | the device tree |
 | [linux-exynos7870](https://github.com/alessandro-fontana/linux-exynos7870) | the kernel: Linux 7.3 and this board's commits |
 | [android_external_gtaxl-loader](https://github.com/alessandro-fontana/android_external_gtaxl-loader) | the loader S-BOOT starts, which starts Linux |
+| [android_external_libcamera](https://github.com/alessandro-fontana/android_external_libcamera) | the cameras: TI's libcamera for Android and this device's commits |
 | this repository | changes to other projects (`patches/`), release tools (`tools/`), instructions, releases |
 
 One branch per LineageOS release, as in LineageOS's own repositories:

@@ -38,10 +38,10 @@
            remote="github" revision="lineage-24.0" />
   <project path="prebuilts/mesa-build-dep" name="LineageOS/android_prebuilts_mesa-build-dep"
            remote="github" revision="lineage-24.0" />
-  <!-- TI's libcamera, with the software ISP the AOSP one lacks, as
-       device/mainline/common/optional/camera-provider-hal_libcamera expects. -->
-  <remote name="ti" fetch="https://git.ti.com/git/android/" />
+  <!-- TI's libcamera for Android, with the software ISP the AOSP one lacks,
+       as device/mainline/common/optional/camera-provider-hal_libcamera
+       expects, and this device's commits on top. -->
   <remove-project name="platform/external/libcamera" />
-  <project path="external/libcamera" name="external-libcamera" remote="ti"
-           revision="523ebfdd1dbfc70305490530f26d961d190914be" />
+  <project path="external/libcamera" name="alessandro-fontana/android_external_libcamera"
+           remote="github" revision="lineage-24.0" />
 </manifest>

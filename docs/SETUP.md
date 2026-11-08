@@ -57,8 +57,8 @@ repo sync -c --no-clone-bundle -j8
 ```
 
 The local manifest adds the device tree, the kernel, the loader,
-`device/mainline/common` and the projects it needs, and LibCamera's Android
-branch by TI.
+`device/mainline/common` and the projects it needs, and the camera's
+libcamera: TI's Android branch with this device's commits.
 
 ## 2. Changes to other projects
 
@@ -76,7 +76,6 @@ external/minigbm-upstream          external_minigbm-upstream
 hardware/linaro/libpm              hardware_linaro_libpm
 external/v4l2_codec2               external_v4l2_codec2
 external/tinyhal                   external_tinyhal
-external/libcamera                 external_libcamera
 END
 ```
 
