@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Wed, 11 Nov 2026 11:58:50 +0100
+Subject: [PATCH] LINEAGE: panfrost: Allow capping the BO cache
+
+Freed BOs stay in the cache for up to two seconds, marked purgeable.
+The kernel purges them only under reclaim, too late for the Android
+low memory killer: a browser that frees textures quickly kept 200-440
+MiB in the cache on a 2 GiB Mali-T830 tablet, and the foreground app
+was killed with free swap left.
+
+PAN_BO_CACHE_MAX_SIZE, in MiB (vendor.mesa.pan.bo.cache.max.size on
+Android), sets a limit: BOs larger than it stay out of the cache, and
+the least recently used ones are evicted when a new BO would push the
+cache over it. Unset or 0 keeps the cache unlimited, as before.
+
+Assisted-by: LLM
+Change-Id: I2c1a19075cd34af4b444fe5a8b581c4e792d7eac
+---
+ src/gallium/drivers/panfrost/pan_bo.c     | 34 ++++++++++++++++++++++-
+ src/gallium/drivers/panfrost/pan_device.c |  3 ++
+ src/gallium/drivers/panfrost/pan_device.h |  6 ++++
+ 3 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfrost/pan_bo.c
+index d0ce95c..d36cfb9 100644
+--- a/src/gallium/drivers/panfrost/pan_bo.c
++++ b/src/gallium/drivers/panfrost/pan_bo.c
+@@ -216,6 +216,7 @@ panfrost_bo_cache_fetch(struct panfrost_device *dev, size_t size,
+       /* This one works, splice it out of the cache */
+       list_del(&entry->bucket_link);
+       list_del(&entry->lru_link);
++      dev->bo_cache.size -= panfrost_bo_size(entry);
+ 
+       if (!pan_kmod_bo_make_unevictable(entry->kmod_bo)) {
+          panfrost_bo_free(entry);
+@@ -251,6 +252,32 @@ panfrost_bo_cache_evict_stale_bos(struct panfrost_device *dev)
+ 
+       list_del(&entry->bucket_link);
+       list_del(&entry->lru_link);
++      dev->bo_cache.size -= panfrost_bo_size(entry);
++      panfrost_bo_free(entry);
++   }
++}
++
++/* With a size limit set, evicts the least recently used BOs, never the one
++ * just added, until the cache fits in it. Freed BOs are only marked
++ * purgeable, and the kernel does not reclaim them before memory gets low:
++ * an application that frees textures quickly can otherwise keep hundreds of
++ * MiB in the cache, which matters on devices with little RAM. */
++
++static void
++panfrost_bo_cache_evict_over_limit(struct panfrost_device *dev,
++                                   struct panfrost_bo *keep)
++{
++   if (!dev->bo_cache.max_size)
++      return;
++
++   list_for_each_entry_safe(struct panfrost_bo, entry, &dev->bo_cache.lru,
++                            lru_link) {
++      if (dev->bo_cache.size <= dev->bo_cache.max_size || entry == keep)
++         break;
++
++      list_del(&entry->bucket_link);
++      list_del(&entry->lru_link);
++      dev->bo_cache.size -= panfrost_bo_size(entry);
+       panfrost_bo_free(entry);
+    }
+ }
+@@ -263,7 +290,9 @@ panfrost_bo_cache_put(struct panfrost_bo *bo)
+ {
+    struct panfrost_device *dev = bo->dev;
+ 
+-   if (bo->flags & PAN_BO_SHARED || dev->debug & PAN_DBG_NO_CACHE)
++   if (bo->flags & PAN_BO_SHARED || dev->debug & PAN_DBG_NO_CACHE ||
++       (dev->bo_cache.max_size &&
++        panfrost_bo_size(bo) > dev->bo_cache.max_size))
+       return false;
+ 
+    /* Must be first */
+@@ -279,6 +308,7 @@ panfrost_bo_cache_put(struct panfrost_bo *bo)
+ 
+    /* Add us to the LRU list and update the last_used field. */
+    list_addtail(&bo->lru_link, &dev->bo_cache.lru);
++   dev->bo_cache.size += panfrost_bo_size(bo);
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    bo->last_used = time.tv_sec;
+ 
+@@ -286,6 +316,7 @@ panfrost_bo_cache_put(struct panfrost_bo *bo)
+     * lock.
+     */
+    panfrost_bo_cache_evict_stale_bos(dev);
++   panfrost_bo_cache_evict_over_limit(dev, bo);
+ 
+    /* Update the label to help debug BO cache memory usage issues */
+    panfrost_bo_set_label(bo, "Unused (BO cache)");
+@@ -314,6 +345,7 @@ panfrost_bo_cache_evict_all(struct panfrost_device *dev)
+          panfrost_bo_free(entry);
+       }
+    }
++   dev->bo_cache.size = 0;
+    pthread_mutex_unlock(&dev->bo_cache.lock);
+ }
+ 
+diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/panfrost/pan_device.c
+index 962f8a0..7cacfdb 100644
+--- a/src/gallium/drivers/panfrost/pan_device.c
++++ b/src/gallium/drivers/panfrost/pan_device.c
+@@ -8,6 +8,7 @@
+ #include "drm-uapi/panfrost_drm.h"
+ #include "util/hash_table.h"
+ #include "util/macros.h"
++#include "util/u_debug.h"
+ #include "util/u_math.h"
+ #include "util/u_thread.h"
+ #include "pan_bo.h"
+@@ -79,6 +80,8 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
+ 
+    pthread_mutex_init(&dev->bo_cache.lock, NULL);
+    list_inithead(&dev->bo_cache.lru);
++   dev->bo_cache.max_size =
++      (size_t)debug_get_num_option("PAN_BO_CACHE_MAX_SIZE", 0) << 20;
+ 
+    for (unsigned i = 0; i < ARRAY_SIZE(dev->bo_cache.buckets); ++i)
+       list_inithead(&dev->bo_cache.buckets[i]);
+diff --git a/src/gallium/drivers/panfrost/pan_device.h b/src/gallium/drivers/panfrost/pan_device.h
+index 3512273..1b8634a 100644
+--- a/src/gallium/drivers/panfrost/pan_device.h
++++ b/src/gallium/drivers/panfrost/pan_device.h
+@@ -131,6 +131,12 @@ struct panfrost_device {
+        * Each bucket is a linked list of free panfrost_bo objects. */
+ 
+       struct list_head buckets[NR_BO_CACHE_BUCKETS];
++
++      /* Total size of the BOs in the cache, in bytes. */
++      size_t size;
++
++      /* Upper bound on size, 0 for none: PAN_BO_CACHE_MAX_SIZE, in MiB. */
++      size_t max_size;
+    } bo_cache;
+ 
+    struct pan_fb_preload_cache fb_preload_cache;
+-- 
+2.47.3
+

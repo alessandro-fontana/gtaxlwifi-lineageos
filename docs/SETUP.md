@@ -78,6 +78,7 @@ hardware/linaro/libpm              hardware_linaro_libpm
 external/v4l2_codec2               external_v4l2_codec2
 external/tinyhal                   external_tinyhal
 packages/apps/Aperture             packages_apps_Aperture
+external/mesa                      external_mesa
 END
 ```
 
