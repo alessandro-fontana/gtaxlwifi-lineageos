@@ -60,9 +60,8 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
    Copy the release files into the same folder.
 2. **Samsung USB driver**: install *Samsung Android USB Driver for Windows*
    from Samsung's developer site, then restart the computer.
-3. **samloader-rs** for Windows, unzipped into the same folder (not tested
-   on Windows yet), or **Odin** (Samsung's flashing tool, version 3.13 or
-   later).
+3. **samloader-rs** for Windows, unzipped into the same folder, or **Odin**
+   (Samsung's flashing tool, version 3.13 or later).
 
 ## Install
 
@@ -76,8 +75,10 @@ For the **SM-T580** (`gtaxlwifi`) only, not the LTE model (SM-T585).
    samloader flash --partition BOOT gtaxlwifi-boot.img --partition RECOVERY gtaxlwifi-recovery.img
    ```
 
-   (On Windows `.\samloader ...` in PowerShell.) Both lines must end with
-   `flash successful`. Alternatives: Heimdall,
+   On Linux the output ends with `flash successful`. On Windows
+   (`.\samloader ...` in PowerShell) it can end with `Ending session...`
+   and no `flash successful` (seen with `--usb-backend vcom`): the images
+   are written anyway, and the tablet goes on as below. Alternatives: Heimdall,
    `heimdall flash --BOOT gtaxlwifi-boot.img --RECOVERY gtaxlwifi-recovery.img`;
    or Odin on Windows, with `gtaxlwifi-odin-AP.tar.md5` in the **AP** slot
    and *Auto Reboot* on (Odin is not tested).
