@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alessandro Fontana <alessandro.fontana@pm.me>
+Date: Mon, 9 Nov 2026 16:04:48 +0100
+Subject: [PATCH] libhealthloop: Stop rearming the alarm on events
+
+On battery, every event rearmed the slow wake alarm to a full interval,
+and every event also restarts the awake poll timeout. A client calling
+the HAL more often than once a minute kept both from expiring: the
+battery was not read again until the driver raised an event, and the
+level Android showed stayed where it was for hours.
+
+Drop the rearm, as AOSP main does: the alarm fires at its interval
+whatever the events in between.
+
+Assisted-by: LLM
+Change-Id: Ia7bc0a5495793918df2fe8677a3e703184662def
+---
+ health/utils/libhealthloop/HealthLoop.cpp | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/health/utils/libhealthloop/HealthLoop.cpp b/health/utils/libhealthloop/HealthLoop.cpp
+index 8501f33..c603c14 100644
+--- a/health/utils/libhealthloop/HealthLoop.cpp
++++ b/health/utils/libhealthloop/HealthLoop.cpp
+@@ -267,15 +267,6 @@ void HealthLoop::MainLoop(void) {
+             break;
+         }
+ 
+-        /*
+-         * Reset slow timer to avoid excessive wakeup on interrupt
+-         * It's assumed periodic_chores_interval_slow means the device being in non-charging state
+-         */
+-        if (nevents > 0 &&
+-            wakealarm_wake_interval_ == healthd_config_.periodic_chores_interval_slow) {
+-            WakeAlarmSetInterval(wakealarm_wake_interval_);
+-        }
+-
+         for (int n = 0; n < nevents; ++n) {
+             if (events[n].data.ptr) {
+                 auto* event_handler = reinterpret_cast<EventHandler*>(events[n].data.ptr);
+-- 
+2.47.3
+
